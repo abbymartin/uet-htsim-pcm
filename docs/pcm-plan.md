@@ -151,6 +151,8 @@ htsim/sim/pcm/
                       uet_set_cwnd, uet_set_send_rate, uet_get/set/update_variable_*,
                       uet_trigger_mask, uet_modify_trigger/query_trigger,
                       uet_trigger_drop_mask, uet_ccc_fatal
+  pcm_signals.{h,cpp} every spec signal (Tables 3-109, 3-112) with its direction and
+                      unit, whether we support it, and our vendor signal
   pcm_spec.{h,cpp}    YAML loader: reads and checks an algorithm's YAML file; rejects
                       anything we don't support
   pcm_runtime.{h,cpp} class PcmCcc, one per CCC (§4.5): accumulators, triggers,
@@ -323,8 +325,13 @@ outputs stay unchanged.
 ## 7. Where we differ from the spec
 
 Each item below also gets a comment at the code that implements it. When an
-algorithm's YAML uses one of our additions (items 4–6), the loader prints a line
-saying so, so experiment logs show whether a run used only spec features.
+algorithm's YAML uses one of our additions (items 4–5), the loader records it,
+and the simulator will print it, so experiment logs show whether a run used only
+spec features.
+
+The loader is also stricter than the spec in ways that only catch mistakes:
+unknown or repeated keys are errors, and a file whose handler can never be called
+(no armed `invoke` trigger) gets a warning.
 
 1. **Triggers always compare against `op_val`.** The spec is inconsistent here.
    Its trigger definition (§3.6.18.5.1) compares the accumulator against the same
@@ -352,11 +359,16 @@ saying so, so experiment logs show whether a run used only spec features.
    `uet_signal_set()`. We support `uet_signal_set()` and `uet_signal_update()`,
    which are optional in the spec.
 
-4. **Added: DELTA and MAGNITUDE triggers.** The spec has only one kind of trigger,
-   comparing the accumulator's value. Following the paper (§5.1), an optional
-   `trigger_type` field adds `delta`, which compares the change since the
-   trigger's last true comparison, and `magnitude`, the absolute value of that
-   change. The default `raw` is the spec's behaviour.
+4. **Added: DELTA and MAGNITUDE triggers, taken from the paper.** The spec has
+   only one kind of trigger, comparing the accumulator's value. The paper's PCM
+   design (§5.1) has three trigger modes: RAW compares the accumulated value,
+   DELTA compares "the change since that trigger's last satisfied check", and
+   MAGNITUDE compares "the absolute change from the same baseline". The paper's
+   handlers use them: the MP-RDMA example's YAML (paper App. B, Listing 4) uses
+   `trigger_type: DELTA` with `>= 1` to react to every new ACK, and its EQDS
+   receiver uses MAGNITUDE. We include them so handlers written in the paper's
+   style can be expressed. An optional `trigger_type` field selects `raw` (the
+   default, i.e. the spec's behaviour), `delta` or `magnitude`.
 
 5. **Added: a NACKed-bytes signal**, `uet_rx_nack_vend_htsim_bytes` (§3 above). It
    uses the spec's naming rule for vendor signals.
@@ -383,14 +395,49 @@ saying so, so experiment logs show whether a run used only spec features.
    to study reaction delay, as in the paper (§5.3, §7.3). Synchronous mode keeps
    it.
 
-10. **Only part of the mandatory signal set is supported.** The spec requires
+10. **`accumulator` is required on every signal.** The spec's YAML format marks
+    it as optional, with a default "see Table YYY". But the tables it points to
+    (3-110, 3-111) only list which accumulators are mandatory or allowed per
+    signal, not which is the default. So there's nothing to default to, and we
+    require it. Both spellings the spec uses are accepted: `uet_op_sum` (Table
+    3-106) and `uet_sum` (the spec's own examples).
+
+11. **A signal's `scope` may be left out, and a section may be a single entry.**
+    The YAML format (§3.6.18.8.5) marks optional fields with square brackets,
+    and `scope` isn't bracketed, so it's formally required. But both of the
+    spec's signal examples (§3.6.18.5.5, and the timer example in §3.6.18.8.5)
+    leave it out. We let it be omitted, defaulting to `CCC`. Its other value,
+    `EV`, is only for load balancing, which we don't support, so `CCC` is the only
+    value we accept anyway. Similarly, the format describes each section as a
+    list ("sequence node"), but both examples write a signal as a single entry
+    without a list, so both forms are accepted.
+
+    The trigger fields `mode` and `invoke_deadline` are required, as the format
+    says. They're missing from the §3.6.18.5.5 example, but that example ends
+    with `...`, i.e. it leaves fields out for brevity. The one complete trigger
+    example (§3.6.18.8.5) includes both.
+
+12. **Control names are the matching signal names.** The YAML format says
+    control names come from a table ("see Table ZZZ") that the spec doesn't
+    include. Each control function (Tables 3-118, 3-119) has a signal in
+    Table 3-109 for the same quantity, so we use that signal's name. For example,
+    the control set by `uet_set_cwnd()` is named `uet_tx_cwnd`.
+
+13. **`max_ack_coalescing` is read but has no effect yet.** The YAML format
+    requires it ("max number of ACKs to be coalesced") but doesn't say what an
+    implementation should do with it. The loader checks it's a valid number and
+    stores it. We'll decide what it controls when ACK handling is connected
+    (§8, commit 7). The `*_min_bitwidth` fields are checked: anything up to 64 is
+    met, because the simulator uses 64-bit integers and 64-bit floats.
+
+14. **Only part of the mandatory signal set is supported.** The spec requires
     implementations to support all mandatory signals (§3.6.18.4). We support the
     sender-side ones listed in §3. The receiver-side, credit, load-balancing,
     telegram and service-time signals are out of scope or not modelled in htsim.
     A YAML file using an unsupported signal fails to load, which is what the spec
     requires.
 
-11. **Not yet supported, and rejected at load:** global variables (§3.6.18.6.2;
+15. **Not yet supported, and rejected at load:** global variables (§3.6.18.6.2;
     planned after shared CCCs), telegrams (§3.6.18.6.3), control packets
     (§3.6.18.6.4), load-balancing algorithms (§3.6.18.3), and the optional controls
     other than `uet_set_cwnd`. Each gets its own note here once it's added.
@@ -407,11 +454,12 @@ adds its §7 entry and code comment in the same commit.
 - [x] `pcm` branch; read spec §3.6.18 and the paper; agreed scope and §7 decisions
 
 **Commits**
-1. [ ] **docs:** this plan
-2. [ ] **build:** yaml-cpp via FetchContent (pinned); empty `pcm/` library target
-3. [ ] **pcm: YAML loader.** Reads and checks the §3.6.18.8.5 format plus our
-   `op_val` and `trigger_type` additions; rejects unsupported signals, controls and
-   features. Unit tests.
+1. [x] **docs:** this plan (`df319bd`)
+2. [x] **build:** yaml-cpp 0.8.0 via FetchContent (`53a9916`). The `pcm/` library
+   target moved to commit 3, since CMake needs at least one source file.
+3. [x] **pcm: YAML loader.** The `htsim_pcm` library; reads and checks the
+   §3.6.18.8.5 format plus our `op_val` and `trigger_type` additions; rejects
+   unsupported signals, controls and features. Unit tests.
 4. [ ] **pcm: accumulators and triggers.** All accumulators (including several per
    signal) and the full trigger behaviour from §3.6.18.5 plus §7 items 1, 2 and 4.
    Unit tests.

@@ -144,6 +144,7 @@ target_include_directories(htsim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}) # Needed fo
 
 # Add subdirectories
 add_subdirectory(datacenter)
+add_subdirectory(pcm)
 
 # Define executables and link with htsim library
 add_executable(parse_output parse_output.cpp)
