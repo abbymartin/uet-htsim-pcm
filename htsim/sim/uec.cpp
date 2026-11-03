@@ -6,6 +6,7 @@
 #include "uec_logger.h"
 #include "pciemodel.h"
 #include "pcm_runtime.h"
+#include <tuple>
 
 using namespace std;
 
@@ -44,6 +45,7 @@ bool UecSink::_oversubscribed_cc = false; // can only be enabled when receiver_b
 
 UecSrc::Sender_CC UecSrc::_sender_cc_algo = UecSrc::NSCC;
 std::shared_ptr<const PcmAlgorithm> UecSrc::_pcm_algorithm;
+std::map<std::string, std::shared_ptr<const PcmAlgorithm>> UecSrc::_pcm_group_algorithms;
 PcmUnits UecSrc::_pcm_units = PcmUnits::SPEC;
 
 // ---------------------------------------------------------------------------
@@ -51,17 +53,18 @@ PcmUnits UecSrc::_pcm_units = PcmUnits::SPEC;
 
 namespace {
 
-// Delivers the timer events a flow's CCC asks for. Not traffic: these events
-// don't keep the simulation running on their own, so a periodic PCM timer
-// can't keep a finished simulation going.
+// Delivers the timer events a CCC asks for. Not traffic: these events don't
+// keep the simulation running on their own, so a periodic PCM timer can't keep
+// a finished simulation going.
 class UecPcmTimer : public EventSource {
 public:
-    UecPcmTimer(EventList& eventlist, UecSrc& src) : EventSource(eventlist, "uecPcmTimer"), _src(src) {}
-    void doNextEvent() override { _src.pcmTimer(); }
+    UecPcmTimer(EventList& eventlist, std::function<void()> on_timer)
+        : EventSource(eventlist, "uecPcmTimer"), _on_timer(std::move(on_timer)) {}
+    void doNextEvent() override { _on_timer(); }
     bool isTraffic() override { return false; }
 
 private:
-    UecSrc& _src;
+    std::function<void()> _on_timer;
 };
 
 // The signals the sender reports, looked up once.
@@ -97,14 +100,125 @@ PcmSignalUpdate pcmUpdate(const PcmSignalInfo* signal, int64_t value) {
     return PcmSignalUpdate{signal, value};
 }
 
+// Asks a CCC's scheduler requests to be delivered by `timer`.
+void pcmConnectTimer(PcmCcc& ccc, EventSource* timer, simtime_picosec now) {
+    ccc.setScheduler([timer](PcmTime when) { EventList::sourceIsPending(*timer, when); }, now);
+}
+
+}  // namespace
+
+// A PCM flow group (docs/pcm-plan.md §4.5): the flows with the same group name,
+// source NIC and destination NIC. They share one CCC and one window: a member
+// may send only while the group's bytes in flight leave room in the group's
+// window, and when room frees up, the members take turns, one packet each.
+class UecPcmGroup {
+public:
+    UecPcmGroup(std::string name, std::shared_ptr<const PcmAlgorithm> algo)
+        : _name(std::move(name)), _algo(std::move(algo)) {}
+
+    void add(UecSrc* src) { _members.push_back(src); }
+
+    // Called when a member starts. The first member to start creates the CCC;
+    // its starting window becomes the group's, unless the algorithm's
+    // uet_tx_cwnd control sets one.
+    void start(UecSrc& src) {
+        if (!_ccc) {
+            _eventlist = &src.eventlist();
+            _ccc = new PcmCcc(_algo, _eventlist->now(), _name, UecSrc::_pcm_units);
+            _cwnd = (_ccc->cwnd() && *_ccc->cwnd() != 0) ? mem_b(*_ccc->cwnd()) : src._cwnd;
+            _timer = new UecPcmTimer(*_eventlist, [this] { onTimer(); });
+            pcmConnectTimer(*_ccc, _timer, _eventlist->now());
+        }
+        src._pcm = _ccc;
+        src._cwnd = _cwnd;
+    }
+
+    mem_b cwnd() const { return _cwnd; }
+
+    // Every member's _cwnd mirrors the group's window, so code that reads a
+    // flow's window (e.g. for load balancing) sees the group's.
+    void setCwnd(mem_b cwnd) {
+        _cwnd = cwnd;
+        for (UecSrc* m : _members)
+            m->_cwnd = cwnd;
+    }
+
+    mem_b inFlight() const {
+        mem_b total = 0;
+        for (const UecSrc* m : _members)
+            total += m->_in_flight;
+        return total;
+    }
+
+    mem_b backlog() const {
+        mem_b total = 0;
+        for (const UecSrc* m : _members)
+            total += m->_backlog + m->_rtx_backlog;
+        return total;
+    }
+
+    // Let members send while the window allows, one packet each in turn,
+    // starting after the member that sent last.
+    void kick() {
+        if (_kicking)
+            return;
+        _kicking = true;
+        bool sent = true;
+        while (sent) {
+            sent = false;
+            for (size_t k = 0; k < _members.size(); k++) {
+                size_t i = (_next + k) % _members.size();
+                UecSrc* m = _members[i];
+                if (m->hasStarted() && m->sendOnePacketIfPermitted()) {
+                    _next = (i + 1) % _members.size();
+                    sent = true;
+                    break;
+                }
+            }
+        }
+        _kicking = false;
+    }
+
+    void onTimer() {
+        const uint64_t cwnd_updates = _ccc->counters().cwnd_updates;
+        _ccc->onTimer(_eventlist->now());
+        if (_ccc->counters().cwnd_updates != cwnd_updates) {
+            setCwnd(mem_b(*_ccc->cwnd()));
+            kick();
+        }
+    }
+
+    const std::string& name() const { return _name; }
+
+private:
+    std::string _name;
+    std::shared_ptr<const PcmAlgorithm> _algo;
+    std::vector<UecSrc*> _members;
+    PcmCcc* _ccc = nullptr;
+    EventList* _eventlist = nullptr;
+    EventSource* _timer = nullptr;
+    mem_b _cwnd = 0;
+    size_t _next = 0;
+    bool _kicking = false;
+};
+
+namespace {
+
+// All flow groups, by (group name, source NIC, destination NIC).
+std::map<std::tuple<std::string, uint32_t, uint32_t>, UecPcmGroup*>& pcmGroups() {
+    static std::map<std::tuple<std::string, uint32_t, uint32_t>, UecPcmGroup*> groups;
+    return groups;
+}
+
 // PCM counters for a flow's finish line; empty for non-PCM flows, so their
-// output is unchanged.
-std::string pcmFlowStats(const PcmCcc* c) {
+// output is unchanged. For a flow in a group, these are the group's CCC's.
+std::string pcmFlowStats(const PcmCcc* c, const UecPcmGroup* group) {
     if (!c)
         return "";
     const auto& k = c->counters();
     const auto& s = c->signals().counters();
-    return " pcm_events " + std::to_string(s.events) +
+    return (group ? " pcm_group " + group->name() : std::string()) +
+           " pcm_events " + std::to_string(s.events) +
            " pcm_calls " + std::to_string(k.invocations) +
            " pcm_deadline_calls " + std::to_string(k.deadline_invocations) +
            " pcm_timer_events " + std::to_string(k.timer_events) +
@@ -114,7 +228,31 @@ std::string pcmFlowStats(const PcmCcc* c) {
 
 }  // namespace
 
+void UecSrc::pcmJoinGroup(const std::string& group, uint32_t src_nic, uint32_t dst_nic) {
+    assert(!hasStarted());
+    assert(!_pcm_group);
+    auto key = std::make_tuple(group, src_nic, dst_nic);
+    auto it = pcmGroups().find(key);
+    if (it == pcmGroups().end()) {
+        auto a = _pcm_group_algorithms.find(group);
+        auto algo = a != _pcm_group_algorithms.end() ? a->second : _pcm_algorithm;
+        assert(algo);
+        std::string name = group + ":" + std::to_string(src_nic) + "->" + std::to_string(dst_nic);
+        it = pcmGroups().emplace(key, new UecPcmGroup(name, algo)).first;
+    }
+    it->second->add(this);
+    _pcm_group = it->second;
+}
+
+mem_b UecSrc::windowBytes() const { return _pcm_group ? _pcm_group->cwnd() : _cwnd; }
+
+mem_b UecSrc::windowInFlight() const { return _pcm_group ? _pcm_group->inFlight() : _in_flight; }
+
 void UecSrc::pcmStart() {
+    if (_pcm_group) {
+        _pcm_group->start(*this);
+        return;
+    }
     assert(_pcm_algorithm);
     _pcm = new PcmCcc(_pcm_algorithm, eventlist().now(), _name, _pcm_units);
     // A uet_tx_cwnd control with initial_value 0 keeps the window the simulator
@@ -122,27 +260,31 @@ void UecSrc::pcmStart() {
     // docs/pcm-plan.md §7.
     if (_pcm->cwnd() && *_pcm->cwnd() != 0)
         _cwnd = mem_b(*_pcm->cwnd());
-    _pcm_timer = new UecPcmTimer(eventlist(), *this);
-    EventSource* timer = _pcm_timer;
-    _pcm->setScheduler([timer](PcmTime when) { EventList::sourceIsPending(*timer, when); },
-                       eventlist().now());
+    _pcm_timer = new UecPcmTimer(eventlist(), [this] { pcmTimer(); });
+    pcmConnectTimer(*_pcm, _pcm_timer, eventlist().now());
 }
 
 void UecSrc::pcmEvent(std::vector<PcmSignalUpdate>& updates) {
     // The window, bytes in flight and backlog are uet_tx_* signals, but they are
     // reported with every event, not only sent packets, so that a handler always
-    // reads their current values. See docs/pcm-plan.md §7.
+    // reads their current values. See docs/pcm-plan.md §7. For a flow group they
+    // are the group's: its window, and the totals over its flows.
     const PcmSenderSignals& s = pcmSig();
-    updates.push_back(pcmUpdate(s.tx_cwnd, _cwnd));
-    updates.push_back(pcmUpdate(s.tx_inflight_bytes, _in_flight));
-    updates.push_back(pcmUpdate(s.tx_backlog_bytes, _backlog + _rtx_backlog));
+    updates.push_back(pcmUpdate(s.tx_cwnd, windowBytes()));
+    updates.push_back(pcmUpdate(s.tx_inflight_bytes, windowInFlight()));
+    updates.push_back(pcmUpdate(s.tx_backlog_bytes,
+                                _pcm_group ? _pcm_group->backlog() : _backlog + _rtx_backlog));
     for (auto& u : updates)
         u.value = pcmToSignalUnits(u.signal->unit, u.value, _pcm->units());
 
     const uint64_t cwnd_updates = _pcm->counters().cwnd_updates;
     _pcm->onEvent(updates, eventlist().now());
-    if (_pcm->counters().cwnd_updates != cwnd_updates)
-        _cwnd = mem_b(*_pcm->cwnd());
+    if (_pcm->counters().cwnd_updates != cwnd_updates) {
+        if (_pcm_group)
+            _pcm_group->setCwnd(mem_b(*_pcm->cwnd()));
+        else
+            _cwnd = mem_b(*_pcm->cwnd());
+    }
 }
 
 void UecSrc::pcmTimer() {
@@ -950,7 +1092,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
                     << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes
-                    << pcmFlowStats(_pcm)
+                    << pcmFlowStats(_pcm, _pcm_group)
                     << endl;
                 cancelRTO();
                 _done_sending = true;
@@ -971,7 +1113,7 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
                     << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes
-                    << pcmFlowStats(_pcm)
+                    << pcmFlowStats(_pcm, _pcm_group)
                     << endl;
                 _speculating = false;
                 if (_end_trigger) {
@@ -1054,6 +1196,9 @@ void UecSrc::processAck(const UecAckPacket& pkt) {
     if (_sender_based_cc && pkt.rcv_wnd_pen() < 255) {
             sint64_t window_decrease = newly_recvd_bytes - newly_recvd_bytes * pkt.rcv_wnd_pen() / 255;
             _cwnd = max(_cwnd-window_decrease, (mem_b)_mtu);
+            // A flow in a PCM flow group shares the group's window.
+            if (_pcm_group)
+                _pcm_group->setCwnd(_cwnd);
     }
 
     //compute RTT sample
@@ -1267,9 +1412,12 @@ bool UecSrc::can_send_NSCC(mem_b pkt_size) {
     // A CCC in the ERROR state admits no new packets (§3.6.18.7.2.1).
     if (_pcm && _pcm->inError())
         return false;
+    // For a PCM flow group, the group's window and bytes in flight.
+    const mem_b window = windowBytes();
+    const mem_b in_flight = windowInFlight();
     return (pkt_size > 0)
-    	   && (((!_loss_recovery_mode && _cwnd >= _in_flight + pkt_size) 
-                || (_loss_recovery_mode && (!_rtx_queue.empty() || _cwnd >= _in_flight + pkt_size))));
+    	   && (((!_loss_recovery_mode && window >= in_flight + pkt_size)
+                || (_loss_recovery_mode && (!_rtx_queue.empty() || window >= in_flight + pkt_size))));
 }
 
 void UecSrc::set_cwnd_bounds() {
@@ -2077,24 +2225,35 @@ mem_b UecSrc::getNextPacketSize(){
 }
 
 void UecSrc::sendIfPermitted() {
-    // send if the NIC, credit and window allow.           
-
-    if (_receiver_based_cc && credit() <= 0) {
-        // can send if we have *any* credit, but we don't                                                                                                         
+    // Flows in a PCM flow group share one window and take turns sending.
+    if (_pcm_group) {
+        _pcm_group->kick();
         return;
     }
+    // send if the NIC, credit and window allow, one packet at a time.
+    if (sendOnePacketIfPermitted())
+        sendIfPermitted();
+}
 
-    //cout << timeAsUs(eventlist().now()) << " " << nodename() << " FOO " << _cwnd << " " << _in_flight << endl;                                                  
-    mem_b next_packet_size = getNextPacketSize();        
+// Send one packet if the NIC, credit and window allow. Returns true if a
+// packet was sent.
+bool UecSrc::sendOnePacketIfPermitted() {
+    if (_receiver_based_cc && credit() <= 0) {
+        // can send if we have *any* credit, but we don't
+        return false;
+    }
+
+    //cout << timeAsUs(eventlist().now()) << " " << nodename() << " FOO " << _cwnd << " " << _in_flight << endl;
+    mem_b next_packet_size = getNextPacketSize();
     if (_sender_based_cc) {
         if (!can_send_NSCC(next_packet_size)) {
-            return;
+            return false;
         }
     }
 
     if (_rtx_queue.empty()) {
         if (_backlog == 0) {
-            return;
+            return false;
         }
     }
     if (_flow.flow_id() == _debug_flowid)
@@ -2108,9 +2267,9 @@ void UecSrc::sendIfPermitted() {
             for(auto it = _nic._active_srcs.begin(); it != _nic._active_srcs.end(); ++it) {
                 UecSrc* queued_src = *it; 
                 cout << timeAsUs(eventlist().now()) << " flowid " << _flow.flow_id() <<" sendIfPermitted block" << queued_src->flow()->flow_id() << " _nic " << _nic._src_id << endl;;
-            } 
+            }
         }
-        return;
+        return false;
     }
 
     // we can send if the NIC lets us.                                                                                                                            
@@ -2125,14 +2284,15 @@ void UecSrc::sendIfPermitted() {
         mem_b sent_bytes = sendPacket(*route);
         if (sent_bytes > 0) {
             _nic.startSending(*this, sent_bytes, route);
-            sendIfPermitted();
+            return true;
         } else {
             _nic.cantSend(*this);
+            return false;
         }
     } else {
-        // we can't send yet, but NIC will call us back when we can                                                                                               
+        // we can't send yet, but NIC will call us back when we can
         _send_blocked_on_nic = true;
-        return;
+        return false;
     }
 }
 
@@ -2241,7 +2401,7 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
     p->set_pathid(ev);
     p->flow().logTraffic(*p, *this, TrafficLogger::PKT_CREATESEND);
 
-    if (_backlog == 0 || (_receiver_based_cc && _credit <= 0) || ( _sender_based_cc &&  (_in_flight + full_pkt_size) >= _cwnd )) 
+    if (_backlog == 0 || (_receiver_based_cc && _credit <= 0) || ( _sender_based_cc &&  (windowInFlight() + full_pkt_size) >= windowBytes() ))
         p->set_ar(true);
     
     createSendRecord(_highest_sent, full_pkt_size);

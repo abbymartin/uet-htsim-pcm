@@ -24,6 +24,9 @@ struct connection{
     triggerid_t trigger;
     simtime_picosec start;
     int priority;
+    // PCM flow group (`ccc <group>`); empty if none. Only used with PCM
+    // (docs/pcm-plan.md §4.5).
+    string ccc_group;
 };
 
 typedef enum {UNSPECIFIED, SINGLE_SHOT, MULTI_SHOT, BARRIER} trigger_type;

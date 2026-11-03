@@ -57,11 +57,15 @@ cd datacenter
   background, and **don't rebuild while it runs**: it uses the binary in
   `build/`. It regenerates `datacenter/validate_outputs/*.out`; those files
   should show no changes afterwards unless a change is meant to alter results.
-- **Exact-match check:** `datacenter/pcm_exact_match.sh` (also part of `ctest`)
-  checks that PCM ports of htsim's built-in algorithms send exactly like the
-  originals. A few seconds.
-- **PCM options:** `-pcm FILE`, `-pcm_param NAME=VALUE` (repeatable), and
-  `-pcm_units spec|native`. See `./htsim_uec -help`.
+- **PCM checks:** `datacenter/pcm_exact_match.sh` (PCM ports of htsim's built-in
+  algorithms send exactly like the originals) and `datacenter/pcm_groups_check.sh`
+  (flow groups share one window). Both are part of `ctest`; a few seconds each.
+- **PCM options:** `-pcm FILE`, `-pcm_ccc GROUP=FILE`, `-pcm_param NAME=VALUE` or
+  `GROUP:NAME=VALUE` (both repeatable), and `-pcm_units spec|native`. Flows are
+  put in a group with `ccc GROUP` on their connection-matrix line. See
+  `./htsim_uec -help` and `docs/pcm-plan.md` §4.5.
+- **Runs stop at `-end`, 1000 µs by default.** Flows still running then have no
+  finish line; give long runs a larger `-end` (in µs).
 
 ## Working rules
 

@@ -293,30 +293,53 @@ between the same two FEPs in the same traffic class share one CCC (§3.6, §3.5.
 In htsim, each `UecSrc` is one PDC.
 
 - **Flows are grouped by (group name, source NIC, destination NIC).** Flows with
-  the same three values share one `PcmCcc`. They're looked up in a hash map on
-  these three values. Traffic class is left out because htsim has none (see §7).
-- **Group names come from the connection matrix,** via a new optional
-  `ccc <group>` token. The parser already reads `key value` tokens on each line:
+  the same three values share one CCC, held by a `UecPcmGroup` (in `uec.cpp`).
+  Traffic class is left out because htsim has none (§7 item 7).
+- **Group names come from the connection matrix,** via an optional `ccc <group>`
+  token:
   ```
   0->15 start 0  size 2000000 ccc ai        # CCC (ai, 0, 15)
   0->15 start 50 size 2000000 ccc ai        # same CCC, shares the window
   0->15 start 0  size 1000000 ccc storage   # CCC (storage, 0, 15)
   2->15 start 0  size 2000000               # no group: its own CCC
   ```
+  Without PCM the token is ignored, so the same matrix can be run with the
+  built-in algorithms for comparison.
 - **A flow without a group gets its own CCC**, exactly like today's
-  one-window-per-flow behaviour (see §7).
-- **Choosing an algorithm per group.** `-pcm default.yaml` applies to flows without
-  a group. `-pcm_ccc <group>=<file.yaml>` sets the algorithm for a group. Several
-  groups can use the same algorithm with different parameters.
-- **What is shared and what isn't.** The CCC holds the window (and later the rate),
-  the group's bytes in flight, and all accumulators, variables, triggers and
-  counters. Each `UecSrc` keeps its own reliability state: sequence numbers, SACK,
-  retransmit queue and timeout timer. `uet_tx_inflight_bytes` and
-  `uet_tx_backlog_bytes` are totals over the group.
-- **Sharing the window.** A flow in a group may send only if the group's window has
-  room. When room frees up, the flows with data waiting take turns (round-robin),
-  much as `UecNIC` already takes turns between senders. Only PCM flows in shared
-  groups use this path. A flow with its own CCC uses the existing per-flow check.
+  one-window-per-flow behaviour, through the same code as before (§7 item 8).
+- **Choosing an algorithm per group.** `-pcm FILE` applies to flows without a
+  group, and to groups without their own. `-pcm_ccc GROUP=FILE` gives a group
+  its own algorithm. `-pcm_param GROUP:NAME=VALUE` sets a parameter for one group
+  only; a group with its own parameters gets its own copy of the algorithm
+  (from `-pcm_ccc` or `-pcm`). This lets several groups run the same algorithm
+  with different parameters, the spec's "personalities".
+- **What is shared and what isn't.** The group's CCC holds the window, all
+  accumulators, variables, triggers and counters, and one timer. Each `UecSrc`
+  keeps its own reliability state: sequence numbers, SACK, retransmit queue and
+  timeout timer. Every flow's events go to the group's CCC, and the window,
+  bytes-in-flight and backlog signals are the group's: its window and the totals
+  over its flows.
+- **Starting the group.** The group's CCC is created when its first flow starts.
+  Its starting window is that flow's (or the `uet_tx_cwnd` control's
+  `initial_value` if non-zero). Each flow's own window variable mirrors the
+  group's, so code that reads it (load balancing, the receiver's window penalty)
+  sees and changes the group's window.
+- **Sharing the window.** A flow in a group may send only if the group's bytes in
+  flight plus the packet fit in the group's window; this check is in
+  `UecSrc::can_send_NSCC`, which every send path uses. When room frees up, the
+  group's flows take turns, one packet each, round-robin starting after the flow
+  that sent last (`UecPcmGroup::kick`). The NIC still decides when each packet
+  goes out, as it does for any sender. A flow with its own CCC sends exactly as
+  before. `sendIfPermitted` was split so that sending one packet is a separate
+  function (`sendOnePacketIfPermitted`), without changing what it does for
+  other flows.
+- **Output.** A grouped flow's finish line shows `pcm_group <group>:<src>-><dst>`,
+  followed by its group's CCC counters. The `PCM:` summary counts each CCC once.
+- **Checked by** `datacenter/pcm_groups_check.sh` (also in `ctest`). Two 2 MB
+  flows from NIC 0 to NIC 15 with 10-packet windows finish at 728 / 745 µs
+  without a group, and at 1569 / 1570 µs in one group: one shared window takes
+  about twice as long, and the flows finish together. In two different groups
+  they behave exactly as without a group.
 - **Global variables** (§3.6.18.6.2) will be shared by all CCCs on the same source
   NIC. They come after shared CCCs.
 
@@ -649,6 +672,12 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     finishes; the error shows as the message printed when it happened, and as
     `Errors` in the `PCM:` summary line.
 
+28. **Flows sharing a CCC take turns, one packet each.** The spec says a CCC's
+    window limits the bytes in flight "for the one or more PDCs associated with
+    the CCC" (§3.6), but not how those PDCs share it. We let the group's flows
+    send in turn, one packet each, whenever the window has room (§4.5), so that
+    a flow can't take the whole window just because its ACKs arrived first.
+
 ## 8. Commit plan
 
 Each commit builds, passes `ctest`, and leaves non-PCM behaviour unchanged.
@@ -686,7 +715,7 @@ adds its §7 entry and code comment in the same commit.
 8. [x] **pcm: DCTCP.** `dctcp_legacy` (exact port of the existing DCTCP) and the
    exact-match test, as ctest or a script, covering `constant` too; textbook
    `dctcp`, a unit test of α, and incast/permutation sanity runs.
-9. [ ] **pcm: flow groups and shared windows.** `ccc <group>` in the connection
+9. [x] **pcm: flow groups and shared windows.** `ccc <group>` in the connection
    matrix, grouping by (group, src, dst), `-pcm_ccc group=file`; group
    bytes-in-flight, taking turns between flows, group totals for signals; unit
    tests, tests that two grouped flows share one window fairly, and

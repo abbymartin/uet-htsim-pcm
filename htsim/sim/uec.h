@@ -4,6 +4,8 @@
 
 #include <memory>
 #include <list>
+#include <map>
+#include <string>
 #include <set>
 #include <optional>
 
@@ -33,6 +35,7 @@ class PcmAlgorithm;
 class PcmCcc;
 struct PcmSignalUpdate;
 enum class PcmUnits;
+class UecPcmGroup;
 
 
 // UecNIC aggregates UecSrcs that are on the same NIC.  It round
@@ -223,11 +226,20 @@ public:
     static Sender_CC _sender_cc_algo;
 
     // The PCM algorithm and units used by PCM flows. Set from the command line.
+    // Flows in a flow group use the group's algorithm from
+    // _pcm_group_algorithms if it has one, otherwise _pcm_algorithm.
     static std::shared_ptr<const PcmAlgorithm> _pcm_algorithm;
+    static std::map<std::string, std::shared_ptr<const PcmAlgorithm>> _pcm_group_algorithms;
     static PcmUnits _pcm_units;
 
-    // This flow's CCC, created when the flow starts; nullptr for non-PCM flows
-    // and before the flow starts.
+    // Put this flow in a PCM flow group (docs/pcm-plan.md §4.5). Flows with the
+    // same group name, source NIC and destination NIC share one CCC: one
+    // window, one set of signals, variables and triggers. Call before the flow
+    // starts. A flow not in a group gets its own CCC.
+    void pcmJoinGroup(const std::string& group, uint32_t src_nic, uint32_t dst_nic);
+
+    // This flow's CCC, created when the flow starts (for a group, when its
+    // first flow starts); nullptr for non-PCM flows and before the flow starts.
     const PcmCcc* pcm() const { return _pcm; }
 
     // Called by the PCM timer when the CCC asked for a timer event.
@@ -332,8 +344,17 @@ public:
     // bytes in flight and backlog, and applies any window the handler sets.
     void pcmStart();
     void pcmEvent(std::vector<PcmSignalUpdate>& updates);
-    PcmCcc* _pcm = nullptr;
+    PcmCcc* _pcm = nullptr;          // owned by this flow, or by its group
     EventSource* _pcm_timer = nullptr;
+    UecPcmGroup* _pcm_group = nullptr;
+    friend class UecPcmGroup;
+
+    // The window this flow's sending is limited by, and the bytes in flight
+    // that count against it: the flow's own, or its PCM flow group's.
+    mem_b windowBytes() const;
+    mem_b windowInFlight() const;
+
+    bool sendOnePacketIfPermitted();
 
     void (UecSrc::*updateCwndOnAck)(bool skip, simtime_picosec delay, mem_b newly_acked_bytes);
     void (UecSrc::*updateCwndOnNack)(bool skip, mem_b nacked_bytes, bool last_hop);

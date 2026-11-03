@@ -30,6 +30,8 @@
 #include "fat_tree_switch.h"
 
 #include <list>
+#include <map>
+#include <set>
 
 // Simulation params
 
@@ -63,7 +65,7 @@ static const char * help =
 "\t[-hop_latency NUM] [-switch_latency NUM]\n"
 "\t[-ar_sticky_delta NUM] [-ar_granularity STR]\n"
 "\t[-ar_method STR] [-strat STR]\n"
-"\t[-pcm FNAME] [-pcm_param STR] [-pcm_units STR]\n"
+"\t[-pcm FNAME] [-pcm_ccc STR] [-pcm_param STR] [-pcm_units STR]\n"
 "\n"
 "Notes:\n"
 " FNAME: File name\n"
@@ -103,8 +105,12 @@ static const char * help =
 "                        Default: nscc\n"
 "  -pcm FNAME            Use the PCM algorithm described by this YAML file\n"
 "                        (implies -sender_cc_algo pcm). See docs/pcm-plan.md.\n"
+"  -pcm_ccc STR          Use another PCM algorithm for the flows of a flow\n"
+"                        group (`ccc GROUP` in the connection matrix), as\n"
+"                        GROUP=FNAME. May be repeated. Other groups use -pcm.\n"
 "  -pcm_param STR        Override a parameter of the PCM algorithm, as\n"
-"                        NAME=VALUE. May be repeated.\n"
+"                        NAME=VALUE, or of one flow group's, as\n"
+"                        GROUP:NAME=VALUE. May be repeated.\n"
 "  -pcm_units STR        Units of the signal values PCM handlers see.\n"
 "                        Choices: spec, native. Default: spec\n"
 "  -sender_cc            Enable Sender based Congestion Control.\n"
@@ -255,9 +261,10 @@ int main(int argc, char **argv) {
     
     int seed = 13;
     int i = 1;
-    std::string pcm_file;                 // -pcm
-    std::vector<std::string> pcm_params;  // -pcm_param
-    bool pcm_units_set = false;           // -pcm_units
+    std::string pcm_file;                          // -pcm
+    std::map<std::string, std::string> pcm_group_files;  // -pcm_ccc GROUP=FNAME
+    std::vector<std::string> pcm_params;           // -pcm_param
+    bool pcm_units_set = false;                    // -pcm_units
     double pcie_rate = 1.1;
 
     filename << "logout.dat";
@@ -658,6 +665,15 @@ int main(int argc, char **argv) {
             UecSrc::_sender_cc_algo = UecSrc::PCM;
             pcm_file = argv[i+1];
             i++;
+        } else if (!strcmp(argv[i],"-pcm_ccc")) {
+            std::string a = argv[i+1];
+            auto eq = a.find('=');
+            if (eq == std::string::npos || eq == 0 || eq + 1 == a.size()) {
+                cout << "Expecting -pcm_ccc GROUP=FNAME, found " << a << endl;
+                exit(1);
+            }
+            pcm_group_files[a.substr(0, eq)] = a.substr(eq + 1);
+            i++;
         } else if (!strcmp(argv[i],"-pcm_param")) {
             pcm_params.push_back(argv[i+1]);
             i++;
@@ -699,29 +715,61 @@ int main(int argc, char **argv) {
             cout << "-sender_cc_algo pcm needs a PCM algorithm file: -pcm FNAME" << endl;
             exit(1);
         }
-        try {
-            PcmSpec spec = pcmLoadSpecFile(pcm_file);
-            for (const auto& p : pcm_params)
+        // -pcm_param NAME=VALUE applies to the -pcm algorithm,
+        // GROUP:NAME=VALUE to one flow group's. Parameter names are C
+        // identifiers, so a ':' before the '=' means a group.
+        std::vector<std::string> default_params;
+        std::map<std::string, std::vector<std::string>> group_params;
+        for (const auto& p : pcm_params) {
+            auto colon = p.find(':');
+            if (colon != std::string::npos && colon < p.find('='))
+                group_params[p.substr(0, colon)].push_back(p.substr(colon + 1));
+            else
+                default_params.push_back(p);
+        }
+
+        auto load = [&](const std::string& file, const std::vector<std::string>& params,
+                        const std::string& group) {
+            PcmSpec spec = pcmLoadSpecFile(file);
+            for (const auto& p : params)
                 pcmOverrideParameter(spec, p);
             auto algo = std::make_shared<const PcmAlgorithm>(std::move(spec));
-            cout << "PCM: algorithm " << algo->info().name() << " from " << pcm_file
+            const std::string who = group.empty() ? "PCM: " : "PCM: group " + group + ": ";
+            cout << who << "algorithm " << algo->info().name() << " from " << file
                  << ", units " << (UecSrc::_pcm_units == PcmUnits::SPEC ? "spec" : "native")
                  << endl;
-            for (const auto& p : pcm_params)
-                cout << "PCM: parameter " << p << endl;
+            for (const auto& p : params)
+                cout << who << "parameter " << p << endl;
             for (const auto& e : algo->spec().extensions_used)
-                cout << "PCM: uses non-spec feature: " << e << endl;
+                cout << who << "uses non-spec feature: " << e << endl;
             for (const auto& w : algo->spec().warnings)
-                cout << "PCM: warning: " << w << endl;
+                cout << who << "warning: " << w << endl;
             for (const auto& w : algo->warnings())
-                cout << "PCM: warning: " << w << endl;
-            UecSrc::_pcm_algorithm = algo;
+                cout << who << "warning: " << w << endl;
+            return algo;
+        };
+
+        try {
+            UecSrc::_pcm_algorithm = load(pcm_file, default_params, "");
+            // A group gets its own algorithm if it has its own file or
+            // parameters; otherwise it uses the -pcm algorithm.
+            std::set<std::string> groups;
+            for (const auto& g : pcm_group_files)
+                groups.insert(g.first);
+            for (const auto& g : group_params)
+                groups.insert(g.first);
+            for (const auto& g : groups) {
+                auto f = pcm_group_files.find(g);
+                UecSrc::_pcm_group_algorithms[g] =
+                    load(f != pcm_group_files.end() ? f->second : pcm_file, group_params[g], g);
+            }
         } catch (const PcmSpecError& e) {
             cout << "PCM: " << e.what() << endl;
             exit(1);
         }
-    } else if (!pcm_file.empty() || !pcm_params.empty() || pcm_units_set) {
-        cout << "-pcm, -pcm_param and -pcm_units need -sender_cc_algo pcm" << endl;
+    } else if (!pcm_file.empty() || !pcm_group_files.empty() || !pcm_params.empty() ||
+               pcm_units_set) {
+        cout << "-pcm, -pcm_ccc, -pcm_param and -pcm_units need -sender_cc_algo pcm" << endl;
         exit(1);
     }
     Packet::set_packet_size(packet_size);
@@ -1074,6 +1122,11 @@ int main(int argc, char **argv) {
             logfile.writeName(*uec_src);
             uec_snk->setSrc(src);
 
+            // `ccc GROUP` in the connection matrix: a PCM flow group. Ignored
+            // without PCM, so the same matrix can be run with other algorithms.
+            if (UecSrc::_pcm_algorithm && !crt->ccc_group.empty())
+                uec_src->pcmJoinGroup(crt->ccc_group, src, dest);
+
             if (UecSink::_model_pcie){
                 uec_snk->setPCIeModel(pcie_models[dest]);
             }
@@ -1235,10 +1288,11 @@ int main(int argc, char **argv) {
     if (UecSrc::_pcm_algorithm) {
         uint64_t ccc_count = 0, events = 0, calls = 0, deadline_calls = 0, timer_events = 0,
                  cwnd_updates = 0, errors = 0;
+        std::set<const PcmCcc*> seen;  // flows in a group share one CCC
         for (UecSrc* src : uec_srcs) {
             const PcmCcc* c = src->pcm();
-            if (!c)
-                continue;  // flow never started
+            if (!c || !seen.insert(c).second)
+                continue;  // flow never started, or its group's CCC was counted
             ccc_count++;
             events += c->signals().counters().events;
             calls += c->counters().invocations;

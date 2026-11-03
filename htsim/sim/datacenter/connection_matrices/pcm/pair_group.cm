@@ -1,0 +1,4 @@
+Nodes 16
+Connections 2
+0->15 id 1 start 0 size 2000000 ccc g
+0->15 id 2 start 0 size 2000000 ccc g

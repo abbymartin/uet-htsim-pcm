@@ -71,5 +71,8 @@ if ( ENABLE_TESTS )
     # PCM ports of built-in algorithms must send exactly like the originals.
     add_test(NAME pcm_exact_match COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/pcm_exact_match.sh)
     set_tests_properties(pcm_exact_match PROPERTIES LABELS "integration" TIMEOUT 300)
+    # PCM flow groups share one CCC and window.
+    add_test(NAME pcm_groups_check COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/pcm_groups_check.sh)
+    set_tests_properties(pcm_groups_check PROPERTIES LABELS "integration" TIMEOUT 300)
 endif()
 
