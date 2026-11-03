@@ -13,7 +13,8 @@
 //   (C, 0)  after C evaluations where the comparison was true ("count-only")
 //   (C, T)  whichever of the two happens first ("combined")
 // After firing, a CONTINUOUS trigger resets its count and time and keeps
-// going. A ONCE trigger disarms itself. A DISARMED trigger never fires.
+// going. A ONCE trigger disarms itself and never fires again, since triggers
+// can't be changed (re-armed) at runtime here.
 
 #include <cstdint>
 #include <optional>
@@ -40,11 +41,6 @@ public:
     // trigger fired.
     bool evaluate(const PcmAccumulator& acc, PcmTime now);
 
-    // Change the trigger's configuration (uet_modify_trigger). Per §3.6.18.5.4
-    // this resets all of the trigger's working state, and the trigger is
-    // immediately eligible to fire under the new configuration.
-    void reconfigure(const PcmTriggerSpec& spec, const PcmAccumulator& acc, PcmTime now);
-
     const PcmTriggerSpec& spec() const { return _spec; }
     bool armed() const { return _armed; }
 
@@ -59,12 +55,11 @@ public:
 
 private:
     bool compare(const PcmAccumulator& acc);
-    void reset(const PcmAccumulator& acc, PcmTime now);
 
     PcmTriggerSpec _spec;
-    bool _armed;
+    bool _armed = true;
     uint64_t _true_count = 0;
-    PcmTime _last_fire = 0;  // or the time the trigger was created or reset
+    PcmTime _last_fire = 0;  // or the time the trigger was created
     double _baseline = 0;    // DELTA / MAGNITUDE: value at the last true comparison
 };
 

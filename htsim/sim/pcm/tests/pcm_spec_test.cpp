@@ -78,8 +78,6 @@ TEST(PcmSpecTest, ParsesValidFile) {
 
     EXPECT_EQ(s.source, "test.yaml");
     EXPECT_EQ(s.algorithm.name, "test_algo");
-    EXPECT_EQ(s.algorithm.description, "test algorithm");
-    EXPECT_EQ(s.algorithm.max_ack_coalescing, 8u);
 
     ASSERT_EQ(s.signals.size(), 1u);
     const PcmSignalSpec& sig = s.signals[0];
@@ -99,7 +97,6 @@ TEST(PcmSpecTest, ParsesValidFile) {
 
     ASSERT_EQ(s.controls.size(), 1u);
     EXPECT_EQ(s.controls[0].name, "uet_tx_cwnd");
-    EXPECT_EQ(s.controls[0].macro, "C_CWND");
     EXPECT_EQ(s.controls[0].initial_value, 16600u);
 
     ASSERT_EQ(s.variables.size(), 1u);
@@ -110,10 +107,45 @@ TEST(PcmSpecTest, ParsesValidFile) {
     ASSERT_EQ(s.parameters.size(), 1u);
     EXPECT_EQ(s.parameters[0].macro, "P_G");
     EXPECT_DOUBLE_EQ(std::get<double>(s.parameters[0].value), 0.0625);
-    EXPECT_EQ(s.parameters[0].description, "DCTCP gain");
 
     EXPECT_TRUE(s.extensions_used.empty());
     EXPECT_TRUE(s.warnings.empty());
+}
+
+// Fields the spec's YAML format requires but the simulator doesn't use may be
+// left out: cc_algorithm description and max_ack_coalescing, a control's macro,
+// a parameter's description, and a trigger's mode.
+TEST(PcmSpecTest, UnusedSpecFieldsAreOptional) {
+    PcmSpec s = pcmParseSpec(R"(
+cc_algorithm:
+  name: minimal
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+control:
+  - name: uet_tx_cwnd
+    initial_value: 4096
+parameter:
+  - {macro: P_X, dtype: uint, value: 3}
+)", "minimal.yaml");
+    EXPECT_EQ(s.algorithm.name, "minimal");
+    EXPECT_EQ(s.controls[0].initial_value, 4096u);
+    EXPECT_EQ(std::get<uint64_t>(s.parameters[0].value), 3u);
+    EXPECT_TRUE(s.warnings.empty());
+
+    // When present they are still checked.
+    EXPECT_THAT(errorOf(R"(
+cc_algorithm:
+  name: minimal
+  max_ack_coalescing: many
+)" + kAckSignal + kControl), HasSubstr("max_ack_coalescing must be an unsigned integer"));
+    EXPECT_THAT(errorOf(kHeader + kAckSignal + R"(
+control:
+  - {name: uet_tx_cwnd, macro: 9bad, initial_value: 1}
+)"), HasSubstr("must be a C identifier"));
 }
 
 // The spec's 2 ms timer example (§3.6.18.8.5): short accumulator name
@@ -160,17 +192,8 @@ signal:
     EXPECT_EQ(s.signals[0].trigger->invoke_deadline, 7u);
 }
 
-// `mode` and `invoke_deadline` are required, as in the spec's YAML format.
-TEST(PcmSpecTest, ModeAndInvokeDeadlineRequired) {
-    EXPECT_THAT(errorOf(withSignals(R"(
-signal:
-  - name: uet_rx_ack
-    macro: T_ACK
-    accumulator: uet_op_sum
-    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
-              invoke_deadline: 0}
-)")), HasSubstr("missing required key 'mode'"));
-
+// `invoke_deadline` is required, as in the spec's YAML format.
+TEST(PcmSpecTest, InvokeDeadlineRequired) {
     EXPECT_THAT(errorOf(withSignals(R"(
 signal:
   - name: uet_rx_ack
@@ -311,11 +334,23 @@ signal:
   - name: uet_rx_ack
     macro: T_ACK
     accumulator: uet_op_sum
-    trigger: {op: wc, mode: count_or_time, mode_refval: 1 0, arm_mode: disarmed,
-              action: invoke, invoke_deadline: 0}
+    trigger: {op: wc, mode: count_or_time, mode_refval: 1 0, arm_mode: continuous,
+              action: record, invoke_deadline: 0}
 )"), "test.yaml");
     ASSERT_EQ(s.warnings.size(), 1u);
     EXPECT_THAT(s.warnings[0], HasSubstr("never be called"));
+}
+
+// Triggers can't be changed at runtime, so a disarmed one could never fire.
+TEST(PcmSpecTest, RejectsDisarmedTrigger) {
+    EXPECT_THAT(errorOf(withSignals(R"(
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: DISARMED, action: invoke,
+              invoke_deadline: 0}
+)")), HasSubstr("arm_mode disarmed is not supported"));
 }
 
 TEST(PcmSpecTest, RejectsBadSignals) {
@@ -442,9 +477,8 @@ TEST(PcmSpecTest, RejectsMissingSections) {
 TEST(PcmSpecTest, RejectsBadAlgorithmSection) {
     EXPECT_THAT(errorOf(R"(
 cc_algorithm:
-  name: test_algo
   description: x
-)" + kAckSignal + kControl), HasSubstr("missing required key 'max_ack_coalescing'"));
+)" + kAckSignal + kControl), HasSubstr("missing required key 'name'"));
 
     EXPECT_THAT(errorOf(R"(
 cc_algorithm:
@@ -461,17 +495,13 @@ cc_algorithm:
   uint_min_bitwidth: 128
 )" + kAckSignal + kControl), HasSubstr("between 1 and 64"));
 
-    PcmSpec s = pcmParseSpec(R"(
+    // Bit widths up to 64 are met, so they load (and are not stored).
+    EXPECT_EQ(errorOf(R"(
 cc_algorithm:
   name: test_algo
-  description: x
-  max_ack_coalescing: 1
   uint_min_bitwidth: 32
   float_min_bitwidth: 64
-)" + kAckSignal + kControl, "test.yaml");
-    EXPECT_EQ(s.algorithm.uint_min_bitwidth.value(), 32u);
-    EXPECT_FALSE(s.algorithm.int_min_bitwidth.has_value());
-    EXPECT_EQ(s.algorithm.float_min_bitwidth.value(), 64u);
+)" + kAckSignal + kControl), "");
 }
 
 TEST(PcmSpecTest, RejectsBadVariablesAndParameters) {
@@ -484,8 +514,8 @@ TEST(PcmSpecTest, RejectsBadVariablesAndParameters) {
                 HasSubstr("must be a number"));
     EXPECT_THAT(errorOf(base + "variable:\n  - {macro: V, dtype: double, initial_value: 1}\n"),
                 HasSubstr("dtype 'double'"));
-    EXPECT_THAT(errorOf(base + "parameter:\n  - {macro: P, dtype: uint, value: 1}\n"),
-                HasSubstr("missing required key 'description'"));
+    EXPECT_THAT(errorOf(base + "parameter:\n  - {macro: P, dtype: uint}\n"),
+                HasSubstr("missing required key 'value'"));
 
     PcmSpec s = pcmParseSpec(
         base + "variable:\n  - {macro: V_I, dtype: int, initial_value: -42}\n"
@@ -496,11 +526,9 @@ TEST(PcmSpecTest, RejectsBadVariablesAndParameters) {
 }
 
 TEST(PcmSpecTest, RejectsDuplicateMacrosAndKeys) {
-    EXPECT_THAT(errorOf(kHeader + kAckSignal + R"(
-control:
-  - name: uet_tx_cwnd
-    macro: T_ACK
-    initial_value: 1
+    EXPECT_THAT(errorOf(kHeader + kAckSignal + kControl + R"(
+variable:
+  - {macro: T_ACK, dtype: uint, initial_value: 0}
 )"), HasSubstr("macro 'T_ACK' is used by both"));
 
     EXPECT_THAT(errorOf(validFile() + "variable:\n  - {macro: V2, dtype: uint, initial_value: 0}\n"),
@@ -550,7 +578,6 @@ TEST(PcmSignalsTest, Table) {
     const PcmSignalInfo* s = pcmFindSignal("uet_rx_ack_rtt");
     ASSERT_NE(s, nullptr);
     EXPECT_EQ(s->unit, PcmUnit::TIME_128NS);
-    EXPECT_TRUE(s->mandatory);
     EXPECT_TRUE(s->supported);
 
     s = pcmFindSignal("uet_rx_ack_bytes");
@@ -559,7 +586,6 @@ TEST(PcmSignalsTest, Table) {
 
     s = pcmFindSignal("uet_rx_csig_s");
     ASSERT_NE(s, nullptr);
-    EXPECT_FALSE(s->mandatory);
     EXPECT_FALSE(s->supported);
 
     EXPECT_EQ(pcmFindSignal("not_a_signal"), nullptr);

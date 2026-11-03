@@ -39,7 +39,10 @@ enum class PcmTriggerOp { EQ, NEQ, GT, GTE, LT, LTE, WC };
 // See docs/pcm-plan.md §7.
 enum class PcmTriggerType { RAW, DELTA, MAGNITUDE };
 
-enum class PcmArmMode { DISARMED, ONCE, CONTINUOUS };
+// The spec's third arm mode, DISARMED, is rejected when loading: triggers can't
+// be changed at runtime here, so a disarmed trigger could never fire.
+// See docs/pcm-plan.md §7.
+enum class PcmArmMode { ONCE, CONTINUOUS };
 enum class PcmTriggerAction { INVOKE, RECORD };
 enum class PcmDtype { UINT, INT, FLOAT };
 
@@ -70,7 +73,6 @@ struct PcmSignalSpec {
 
 struct PcmControlSpec {
     std::string name;  // e.g. "uet_tx_cwnd"
-    std::string macro;
     uint64_t initial_value = 0;
     int line = 0;
 };
@@ -86,17 +88,11 @@ struct PcmParameterSpec {
     std::string macro;
     PcmDtype dtype = PcmDtype::UINT;
     PcmValue value = uint64_t(0);
-    std::string description;
     int line = 0;
 };
 
 struct PcmAlgorithmSpec {
     std::string name;  // name of the handler function
-    std::string description;
-    uint64_t max_ack_coalescing = 0;
-    std::optional<uint64_t> uint_min_bitwidth;
-    std::optional<uint64_t> int_min_bitwidth;
-    std::optional<uint64_t> float_min_bitwidth;
 };
 
 struct PcmSpec {

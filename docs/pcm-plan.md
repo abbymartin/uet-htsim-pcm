@@ -71,7 +71,7 @@ Scope decisions:
 | Signals | §3.6.18.4, Table 3-109 | Named `uet_<rx\|tx\|time>_<pkt>_<name>`, e.g. `uet_rx_ack_bytes`, `uet_rx_ack_ecn`, `uet_rx_ack_rtt`, `uet_tx_rto`, `uet_time_current`. If a YAML file uses a signal the implementation doesn't support, loading **must fail**. |
 | Accumulators | Tables 3-106, 3-107, 3-110 | How repeated updates to a signal combine: `uet_op_sum/max/min/last` (mandatory), `uet_op_ewma` (optional). All updates from one packet apply together. One signal may have several accumulators. |
 | Snapshot | §3.6.18.2 | Signal values are frozen when the handler is called. Updates that arrive while it runs count toward the next call. |
-| Triggers | §3.6.18.5 | Decide when the handler is called. Each watches one accumulator, with a comparison (`== != > >= < <= *`), a `(count, time)` threshold, `arm_mode` (DISARMED/ONCE/CONTINUOUS), `action` (INVOKE calls the handler, RECORD only notes that the trigger fired), and `invoke_deadline`. The handler reads which triggers fired with `uet_trigger_mask()`. (The spec's `uet_modify_trigger()` for changing triggers at runtime is not implemented; see §7.) |
+| Triggers | §3.6.18.5 | Decide when the handler is called. Each watches one accumulator, with a comparison (`== != > >= < <= *`), a `(count, time)` threshold, `arm_mode` (DISARMED/ONCE/CONTINUOUS; DISARMED isn't supported, see §7 item 20), `action` (INVOKE calls the handler, RECORD only notes that the trigger fired), and `invoke_deadline`. The handler reads which triggers fired with `uet_trigger_mask()`. (The spec's `uet_modify_trigger()` for changing triggers at runtime is not implemented; see §7.) |
 | Controls | §3.6.18.6.1 | What the handler sets. `uet_set_cwnd` is mandatory. Optional: `uet_set_send_rate`, `uet_set_ack_per_packet`, `uet_set_ack_gen_bytes/timer`, `uet_set_rx_cwnd_penalty`. |
 | Variables | §3.6.18.6.2 | Local variables are private to one CCC. Global variables are shared across CCCs, read as a snapshot, and changed only through their accumulator. |
 | Parameters | §3.6.18.8.5 | Constants per instance. The spec's example is two NSCC instances with different parameters, one for AI traffic and one for storage; it calls this the instance's "personality". |
@@ -447,10 +447,10 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     list ("sequence node"), but both examples write a signal as a single entry
     without a list, so both forms are accepted.
 
-    The trigger fields `mode` and `invoke_deadline` are required, as the format
-    says. They're missing from the §3.6.18.5.5 example, but that example ends
-    with `...`, i.e. it leaves fields out for brevity. The one complete trigger
-    example (§3.6.18.8.5) includes both.
+    The trigger field `invoke_deadline` is required, as the format says. It's
+    missing from the §3.6.18.5.5 example, but that example ends with `...`, i.e.
+    it leaves fields out for brevity. The one complete trigger example
+    (§3.6.18.8.5) includes it.
 
 12. **Control names are the matching signal names.** The YAML format says
     control names come from a table ("see Table ZZZ") that the spec doesn't
@@ -458,12 +458,21 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     Table 3-109 for the same quantity, so we use that signal's name. For example,
     the control set by `uet_set_cwnd()` is named `uet_tx_cwnd`.
 
-13. **`max_ack_coalescing` is read but has no effect yet.** The YAML format
-    requires it ("max number of ACKs to be coalesced") but doesn't say what an
-    implementation should do with it. The loader checks it's a valid number and
-    stores it. We'll decide what it controls when ACK handling is connected
-    (§8, commit 7). The `*_min_bitwidth` fields are checked: anything up to 64 is
-    met, because the simulator uses 64-bit integers and 64-bit floats.
+13. **Fields we have no use for are optional and ignored.** The YAML format
+    requires these, but nothing in the simulator would use them, so they may be
+    left out. When present they are checked, then ignored:
+    - `cc_algorithm.description` and parameter `description`: documentation only.
+    - `cc_algorithm.max_ack_coalescing` ("max number of ACKs to be coalesced"):
+      the spec doesn't say what an implementation should do with it. Checked to
+      be a number.
+    - a control's `macro`: the control functions take no index
+      (`uet_set_cwnd(value)`), so the macro is never used. Checked to be a C
+      identifier.
+    - a trigger's `mode`: `count_or_time` is the only mode the spec defines, so
+      the field carries no information. Any other value is rejected.
+    - `uint_min_bitwidth`, `int_min_bitwidth`, `float_min_bitwidth`: checked to be
+      at most 64, which the simulator always meets with its 64-bit integers and
+      floats.
 
 14. **Only part of the mandatory signal set is supported.** The spec requires
     implementations to support all mandatory signals (§3.6.18.4). We support the
@@ -517,6 +526,11 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     we plan to implement changes its triggers while running, and the spec doesn't
     define their `struct uet_trigger_attr` argument. A trigger's configuration
     comes only from the YAML file. Using either function fails to compile.
+
+    Two consequences for `arm_mode`. A `once` trigger fires a single time and
+    then stays disarmed, since nothing can re-arm it; that still has a use, e.g.
+    one-time setup on the first ACK. A `disarmed` trigger could never fire, so
+    the loader rejects it.
 
 21. **When the handler's changes take effect.** The spec says signal values are
     frozen while the handler runs (§3.6.18.2) and that "control operations are

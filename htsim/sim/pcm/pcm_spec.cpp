@@ -213,27 +213,27 @@ PcmAlgorithmSpec parseAlgorithm(const Parser& p, const YAML::Node& n) {
                 "int_min_bitwidth", "float_min_bitwidth"});
     PcmAlgorithmSpec a;
     a.name = p.identifier(p.required(n, "name", what), what + ".name");
-    a.description = p.scalar(p.required(n, "description", what), what + ".description");
-    // max_ack_coalescing is read and checked but not yet used by the simulator;
-    // see docs/pcm-plan.md §7.
-    a.max_ack_coalescing =
-        p.toUint(p.required(n, "max_ack_coalescing", what), what + ".max_ack_coalescing");
 
-    // The simulator stores integers in 64 bits and floats as double, so any
-    // minimum bit width up to 64 is met.
-    auto bitwidth = [&](const char* key) -> std::optional<uint64_t> {
+    // The spec's YAML format requires `description` and `max_ack_coalescing`,
+    // but the simulator has no use for them, so both are optional and ignored.
+    // The spec doesn't say what an implementation should do with
+    // max_ack_coalescing ("max number of ACKs to be coalesced"); it is still
+    // checked to be a number. See docs/pcm-plan.md §7.
+    if (n["max_ack_coalescing"].IsDefined())
+        p.toUint(n["max_ack_coalescing"], what + ".max_ack_coalescing");
+
+    // The *_min_bitwidth fields are accepted and checked but not stored: the
+    // simulator uses 64-bit integers and 64-bit floats, so any minimum up to 64
+    // is met.
+    for (const char* key : {"uint_min_bitwidth", "int_min_bitwidth", "float_min_bitwidth"}) {
         YAML::Node b = n[key];
         if (!b.IsDefined())
-            return std::nullopt;
+            continue;
         uint64_t v = p.toUint(b, what + "." + key);
         if (v == 0 || v > 64)
             p.fail(b, what + "." + key + " must be between 1 and 64; the simulator "
                       "uses 64-bit integers and 64-bit floats");
-        return v;
-    };
-    a.uint_min_bitwidth = bitwidth("uint_min_bitwidth");
-    a.int_min_bitwidth = bitwidth("int_min_bitwidth");
-    a.float_min_bitwidth = bitwidth("float_min_bitwidth");
+    }
     return a;
 }
 
@@ -288,8 +288,12 @@ PcmTriggerSpec parseTrigger(const Parser& p, const YAML::Node& n, const std::str
                                            std::to_string(Parser::lineOf(type)) + ")");
     }
 
-    // count_or_time is the only mode the spec defines (§3.6.18.5.1).
-    p.toEnum<int>(p.required(n, "mode", what), what + ".mode", {{"count_or_time", 0}});
+    // count_or_time is the only mode the spec defines (§3.6.18.5.1), so `mode`
+    // carries no information. The YAML format requires it; here it may be left
+    // out, but any other value is rejected. See docs/pcm-plan.md §7.
+    YAML::Node mode = n["mode"];
+    if (mode.IsDefined())
+        p.toEnum<int>(mode, what + ".mode", {{"count_or_time", 0}});
 
     // mode_refval: "<count> <time>", two unsigned integers separated by
     // whitespace, as in the spec's example "mode_refval: 0 15625".
@@ -304,9 +308,14 @@ PcmTriggerSpec parseTrigger(const Parser& p, const YAML::Node& n, const std::str
         t.ref_time = p.parseUint(refval, b, what + ".mode_refval time");
     }
 
-    t.arm_mode = p.toEnum<PcmArmMode>(p.required(n, "arm_mode", what), what + ".arm_mode",
-                                      {{"disarmed", PcmArmMode::DISARMED},
-                                       {"once", PcmArmMode::ONCE},
+    // The spec's DISARMED mode is rejected: triggers can't be changed at runtime
+    // here, so a disarmed trigger could never fire. See docs/pcm-plan.md §7.
+    YAML::Node arm = p.required(n, "arm_mode", what);
+    if (Parser::lower(p.scalar(arm, what + ".arm_mode")) == "disarmed")
+        p.fail(arm, what + ".arm_mode disarmed is not supported: triggers can't be changed "
+                           "while running, so a disarmed trigger could never fire");
+    t.arm_mode = p.toEnum<PcmArmMode>(arm, what + ".arm_mode",
+                                      {{"once", PcmArmMode::ONCE},
                                        {"continuous", PcmArmMode::CONTINUOUS}});
     t.action = p.toEnum<PcmTriggerAction>(p.required(n, "action", what), what + ".action",
                                           {{"invoke", PcmTriggerAction::INVOKE},
@@ -416,7 +425,11 @@ PcmControlSpec parseControl(const Parser& p, const YAML::Node& n) {
         p.fail(name, "unknown control '" + c.name + "' (supported: uet_tx_cwnd)");
     what = "control '" + c.name + "'";
 
-    c.macro = p.identifier(p.required(n, "macro", what), what + ".macro");
+    // The spec's YAML format requires a `macro` for each control, but the
+    // control functions take no index (uet_set_cwnd(value)), so the macro is
+    // never used. It is optional and ignored. See docs/pcm-plan.md §7.
+    if (n["macro"].IsDefined())
+        p.identifier(n["macro"], what + ".macro");
     c.initial_value = p.toUint(p.required(n, "initial_value", what), what + ".initial_value");
     return c;
 }
@@ -443,7 +456,8 @@ PcmParameterSpec parseParameter(const Parser& p, const YAML::Node& n) {
     what = "parameter " + par.macro;
     par.dtype = p.toEnum<PcmDtype>(p.required(n, "dtype", what), what + ".dtype", kDtypes);
     par.value = parseValue(p, p.required(n, "value", what), par.dtype, what + ".value");
-    par.description = p.scalar(p.required(n, "description", what), what + ".description");
+    // `description` is required by the spec's YAML format but has no use in the
+    // simulator, so it is optional and ignored. See docs/pcm-plan.md §7.
     return par;
 }
 
@@ -546,10 +560,9 @@ PcmSpec pcmParseSpec(const std::string& yaml_text, const std::string& source_nam
         throw PcmSpecError(os.str());
     }
 
-    // Macros name signals, controls, variables and parameters in the handler
-    // code, so each must be unique in the file. The same signal may appear more
-    // than once (one entry per accumulator, §3.6.18.4.1), but each entry needs
-    // its own macro.
+    // Macros name signals, variables and parameters in the handler code, so each
+    // must be unique in the file. The same signal may appear more than once (one
+    // entry per accumulator, §3.6.18.4.1), but each entry needs its own macro.
     std::map<std::string, std::string> macros;  // macro -> where it was defined
     auto addMacro = [&](const std::string& m, const std::string& where, int line) {
         auto [it, inserted] = macros.emplace(m, where);
@@ -564,8 +577,6 @@ PcmSpec pcmParseSpec(const std::string& yaml_text, const std::string& source_nam
         if (!control_names.insert(c.name).second)
             throw PcmSpecError(source_name + ":" + std::to_string(c.line) + ": control '" +
                                c.name + "' is listed twice");
-        addMacro(c.macro, "control " + c.name + " (line " + std::to_string(c.line) + ")",
-                 c.line);
     }
     for (const auto& v : spec.variables)
         addMacro(v.macro, "a variable (line " + std::to_string(v.line) + ")", v.line);
@@ -574,11 +585,10 @@ PcmSpec pcmParseSpec(const std::string& yaml_text, const std::string& source_nam
 
     bool can_invoke = false;
     for (const auto& s : spec.signals)
-        if (s.trigger && s.trigger->action == PcmTriggerAction::INVOKE &&
-            s.trigger->arm_mode != PcmArmMode::DISARMED)
+        if (s.trigger && s.trigger->action == PcmTriggerAction::INVOKE)
             can_invoke = true;
     if (!can_invoke)
-        spec.warnings.push_back(source_name + ": no trigger has action invoke and is armed, "
+        spec.warnings.push_back(source_name + ": no trigger has action invoke, "
                                 "so the handler will never be called");
     return spec;
 }

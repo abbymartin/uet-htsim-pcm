@@ -29,22 +29,7 @@ bool applyOp(PcmTriggerOp op, T a, T b) {
 }  // namespace
 
 PcmTrigger::PcmTrigger(const PcmTriggerSpec& spec, const PcmAccumulator& acc, PcmTime now)
-    : _spec(spec) {
-    reset(acc, now);
-}
-
-void PcmTrigger::reset(const PcmAccumulator& acc, PcmTime now) {
-    _armed = _spec.arm_mode != PcmArmMode::DISARMED;
-    _true_count = 0;
-    _last_fire = now;
-    _baseline = acc.getFloat();
-}
-
-void PcmTrigger::reconfigure(const PcmTriggerSpec& spec, const PcmAccumulator& acc,
-                             PcmTime now) {
-    _spec = spec;
-    reset(acc, now);
-}
+    : _spec(spec), _last_fire(now), _baseline(acc.getFloat()) {}
 
 // The comparison `accumulator (op) op_val` (docs/pcm-plan.md §7: the spec is
 // inconsistent about what a trigger compares against; we always use op_val).

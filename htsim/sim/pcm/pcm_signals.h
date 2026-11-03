@@ -29,8 +29,6 @@ struct PcmSignalInfo {
     const char* name;
     PcmSignalDir dir;
     PcmUnit unit;
-    bool mandatory;  // mandatory in the spec (Table 3-109); false for optional
-                     // (Table 3-112) and vendor signals
     bool vendor;     // vendor-specific signal added by this simulator
     bool supported;  // implemented by this simulator
 };

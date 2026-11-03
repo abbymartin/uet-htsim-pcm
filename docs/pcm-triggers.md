@@ -13,7 +13,7 @@ watches that entry's accumulator and is configured by:
 | `op`, `op_val` | Comparison `accumulator (op) op_val`; `wc` is always true |
 | `trigger_type` | `raw` compares the value; `delta` / `magnitude` (from the PCM paper) compare the change since the last true comparison |
 | `mode_refval: C T` | Fire after `C` true comparisons, or once `T` × 128 ns have passed since it last fired |
-| `arm_mode` | `disarmed`, `once` or `continuous` |
+| `arm_mode` | `once` or `continuous` (the spec's `disarmed` is rejected; see below) |
 | `action` | `invoke` calls the handler; `record` only sets the trigger's bit in the mask |
 | `invoke_deadline` | For `invoke`: how long the call may be delayed after firing (0 = call now) |
 
@@ -22,23 +22,21 @@ watches that entry's accumulator and is configured by:
 ```mermaid
 stateDiagram-v2
     direction LR
-    [*] --> Armed: arm_mode once or continuous
-    [*] --> Disarmed: arm_mode disarmed
+    [*] --> Armed
 
     Armed --> Armed: evaluated, did not fire
     Armed --> Armed: fired, continuous<br/>(count and timer reset)
     Armed --> Disarmed: fired, once
 
     Disarmed --> Disarmed: evaluated (never fires)
-
-    Armed --> Armed: reconfigured (uet_modify_trigger)
-    Disarmed --> Armed: reconfigured with once or continuous
-    Armed --> Disarmed: reconfigured with disarmed
 ```
 
-Reconfiguring a trigger (§3.6.18.5.4) resets all of its working state: the true
-count goes to 0, the timer restarts from now, and a `delta` / `magnitude`
-baseline becomes the accumulator's current value.
+Every trigger starts armed. The spec lets a handler change, re-arm or disarm
+triggers at runtime with `uet_modify_trigger()`, but that isn't implemented
+here (plan §7 item 20): a trigger's configuration comes only from the YAML file.
+So a `once` trigger fires a single time and then stays disarmed, and
+`arm_mode: disarmed` is rejected when loading, since such a trigger could never
+fire.
 
 ## What one evaluation does
 
@@ -75,7 +73,7 @@ Notes:
   "no evaluation is performed; trigger fires immediately if armed".
 - The time condition doesn't use the comparison: it's "elapsed time since the
   trigger last fired". Before the first fire, time counts from when the trigger
-  was created or reconfigured.
+  was created.
 - The time condition is only checked when the trigger is evaluated. For a
   trigger on a `uet_time_*` signal, the runtime schedules timer events using
   `PcmTrigger::timeDue()`; a trigger on an ACK or NACK signal is checked at the

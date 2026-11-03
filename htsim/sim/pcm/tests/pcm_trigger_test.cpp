@@ -124,40 +124,15 @@ TEST(PcmTriggerTest, CombinedCountOrTime) {
     EXPECT_EQ(t.trueCount(), 0u);
 }
 
-TEST(PcmTriggerTest, OnceDisarmsAndReconfigureRearms) {
+TEST(PcmTriggerTest, OnceFiresOnlyOnce) {
     PcmAccumulator acc(PcmAccOp::SUM);
-    PcmTrigger t(trig(PcmTriggerOp::WC, 0, 1, 0, PcmArmMode::ONCE), acc, 0);
+    PcmTrigger t(trig(PcmTriggerOp::WC, 0, 1, 2, PcmArmMode::ONCE), acc, 0);
     EXPECT_TRUE(t.armed());
     EXPECT_TRUE(t.evaluate(acc, 1));
     EXPECT_FALSE(t.armed());
     EXPECT_FALSE(t.evaluate(acc, 2));
+    EXPECT_FALSE(t.evaluate(acc, 10 * kUnit));  // the time condition is off too
     EXPECT_FALSE(t.timeDue().has_value());
-
-    t.reconfigure(t.spec(), acc, 3);
-    EXPECT_TRUE(t.armed());
-    EXPECT_TRUE(t.evaluate(acc, 4));
-}
-
-TEST(PcmTriggerTest, DisarmedNeverFires) {
-    PcmAccumulator acc(PcmAccOp::SUM);
-    PcmTrigger t(trig(PcmTriggerOp::WC, 0, 0, 0, PcmArmMode::DISARMED), acc, 0);
-    EXPECT_FALSE(t.armed());
-    EXPECT_FALSE(t.evaluate(acc, 1));
-}
-
-// §3.6.18.5.4: changing a trigger resets its working state.
-TEST(PcmTriggerTest, ReconfigureResetsState) {
-    PcmAccumulator acc(PcmAccOp::SUM);
-    PcmTrigger t(trig(PcmTriggerOp::WC, 0, 3, 5), acc, 0);
-    t.evaluate(acc, 1);
-    t.evaluate(acc, 2);
-    EXPECT_EQ(t.trueCount(), 2u);
-
-    t.reconfigure(trig(PcmTriggerOp::WC, 0, 2, 5), acc, 100);
-    EXPECT_EQ(t.trueCount(), 0u);
-    EXPECT_EQ(t.timeDue().value(), 100 + 5 * kUnit);
-    EXPECT_FALSE(t.evaluate(acc, 101));
-    EXPECT_TRUE(t.evaluate(acc, 102));
 }
 
 // DELTA (from the PCM paper): compare the change since the last true

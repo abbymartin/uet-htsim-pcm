@@ -123,32 +123,45 @@ TEST_F(PcmSignalStateTest, InvokeDeadline) {
     EXPECT_EQ(*f.invoke_by, 1000 + 4 * kUnit);
 }
 
-// A trigger is only checked when the event updated its own signal.
-TEST_F(PcmSignalStateTest, OnlyTriggersOfUpdatedSignalsAreChecked) {
-    // Make the ACK trigger fire every 2 ACKs, then send ACK, NACK, ACK.
-    PcmTriggerSpec every2 = state_.trigger(0)->spec();
-    every2.ref_count = 2;
-    state_.trigger(0)->reconfigure(every2, state_.accumulator(0), 0);
+// An ACK trigger that fires every 2 ACKs (entry 0), and a NACK trigger (entry 1).
+const std::string kEvery2Acks = R"(
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 2 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+)";
 
-    EXPECT_EQ(state_.applyEvent(ack(1, false), 1).mask, 0u);
+// A trigger is only checked when the event updated its own signal.
+TEST(PcmSignalStateEvaluation, OnlyTriggersOfUpdatedSignalsAreChecked) {
+    PcmSpec spec = pcmParseSpec(kHeader + kEvery2Acks, "test.yaml");
+    PcmSignalState state(spec, 0);
+
+    // ACK, NACK, ACK.
+    EXPECT_EQ(state.applyEvent(ack(1, false), 1).mask, 0u);
     // The NACK doesn't count towards the ACK trigger...
-    EXPECT_EQ(state_.applyEvent(nack(), 2).mask, PcmSignalState::bit(1));
-    EXPECT_EQ(state_.trigger(0)->trueCount(), 1u);
+    EXPECT_EQ(state.applyEvent(nack(), 2).mask, PcmSignalState::bit(1));
+    EXPECT_EQ(state.trigger(0)->trueCount(), 1u);
     // ...so the second ACK is what fires it.
-    EXPECT_EQ(state_.applyEvent(ack(1, false), 3).mask, PcmSignalState::bit(0));
+    EXPECT_EQ(state.applyEvent(ack(1, false), 3).mask, PcmSignalState::bit(0));
 }
 
 // All updates of one event are applied before triggers are checked, and a
 // trigger is checked once per event even if its signal is updated twice.
-TEST_F(PcmSignalStateTest, OneEvaluationPerEvent) {
-    PcmTriggerSpec every2 = state_.trigger(0)->spec();
-    every2.ref_count = 2;
-    state_.trigger(0)->reconfigure(every2, state_.accumulator(0), 0);
+TEST(PcmSignalStateEvaluation, OneEvaluationPerEvent) {
+    PcmSpec spec = pcmParseSpec(kHeader + kEvery2Acks, "test.yaml");
+    PcmSignalState state(spec, 0);
 
-    PcmFired f = state_.applyEvent({{sig("uet_rx_ack"), 1}, {sig("uet_rx_ack"), 1}}, 1);
-    EXPECT_EQ(state_.get(0), 2);
+    PcmFired f = state.applyEvent({{sig("uet_rx_ack"), 1}, {sig("uet_rx_ack"), 1}}, 1);
+    EXPECT_EQ(state.get(0), 2);
     EXPECT_EQ(f.mask, 0u);
-    EXPECT_EQ(state_.trigger(0)->trueCount(), 1u);
+    EXPECT_EQ(state.trigger(0)->trueCount(), 1u);
 }
 
 TEST_F(PcmSignalStateTest, UnusedSignalsAreIgnored) {
