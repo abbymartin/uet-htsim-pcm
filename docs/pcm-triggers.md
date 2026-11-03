@@ -33,7 +33,7 @@ stateDiagram-v2
 
 Every trigger starts armed. The spec lets a handler change, re-arm or disarm
 triggers at runtime with `uet_modify_trigger()`, but that isn't implemented
-here (plan §7 item 20): a trigger's configuration comes only from the YAML file.
+here (plan §7 item 6): a trigger's configuration comes only from the YAML file.
 So a `once` trigger fires a single time and then stays disarmed, and
 `arm_mode: disarmed` is rejected when loading, since such a trigger could never
 fire.

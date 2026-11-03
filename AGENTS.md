@@ -11,8 +11,8 @@ v1.1 (§3.6.18). A PCM congestion-control algorithm is a YAML file plus a small
 C/C++ handler; the simulator delivers network signals to the handler and
 applies the window it sets.
 
-- [docs/pcm-plan.md](docs/pcm-plan.md): phase 1 design and progress (§8); **§7
-  lists every place we differ from the spec**.
+- [docs/pcm-plan.md](docs/pcm-plan.md): how PCM works here; **§7 lists every
+  place we differ from the spec**.
 - [docs/pcm-triggers.md](docs/pcm-triggers.md): how triggers decide when a
   handler runs.
 - [docs/roadmap.md](docs/roadmap.md): phases 2–4 (more algorithms, AI-workload
@@ -57,6 +57,7 @@ cd datacenter
   background, and **don't rebuild while it runs**: it uses the binary in
   `build/`. It regenerates `datacenter/validate_outputs/*.out`; those files
   should show no changes afterwards unless a change is meant to alter results.
+  PCM runs are in `validate_pcm.txt`.
 - **PCM checks:** `datacenter/pcm_exact_match.sh` (PCM ports of htsim's built-in
   algorithms send exactly like the originals) and `datacenter/pcm_groups_check.sh`
   (flow groups share one window). Both are part of `ctest`; a few seconds each.
@@ -111,6 +112,9 @@ cd datacenter
    the same matrices; an exact port can be added to `pcm_exact_match.sh`.
 5. Run it on incast and permutation matrices, including a large incast
    (`incast_128.cm`): heavy trimming exposes mistakes that small runs hide.
+   Then add a run to `datacenter/validate_pcm.txt`, with a `!tailFCT` bound
+   about 5% above its result, and regenerate the baseline with
+   `python3 validate.py validate_pcm.txt > validate_outputs/validate_pcm.out`.
 
 Things that catch people out:
 - Signal values are in the spec's units by default (time in 128 ns, ACK bytes in

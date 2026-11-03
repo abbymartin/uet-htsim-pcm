@@ -1,12 +1,11 @@
 # Roadmap
 
-What comes after phase 1. Phase 1 (the PCM runtime, shared CCCs, DCTCP) is
-planned in [pcm-plan.md](pcm-plan.md); its §8 tracks progress. This file
-describes phases 2–4 from the project proposal.
+Phases 2–4 of the project proposal. Phase 1 is described in
+[pcm-plan.md](pcm-plan.md).
 
 | Phase | Goal | Depends on |
 |---|---|---|
-| 1 | PCM runtime in htsim, verified with DCTCP | — |
+| 1 | PCM runtime in htsim, verified with DCTCP (done) | — |
 | 2 | More congestion-control algorithms on PCM | 1 |
 | 3 | Simulation scenarios modelled on AI workloads | 1 (can start in parallel with 2) |
 | 4 | Data collection and analysis | 2, 3 |
@@ -24,20 +23,18 @@ Each algorithm is a YAML file plus a handler in `htsim/sim/pcm/algorithms/` (see
 | TIMELY | RTT and its gradient | rate | published TIMELY behaviour | rate limiting; RTT EWMA (`uet_op_ewma`) |
 | BBR (if time permits) | ACK bytes over time, RTT | rate and window | published BBR behaviour | rate limiting |
 
-Shared prerequisites, each its own commit:
+Prerequisites, each its own commit:
 - **Rate limiting in the sender**, for `uet_set_send_rate()` (spec Table 3-119)
   and the `uet_tx_send_rate` signal. Today the sender only enforces a window
   (`UecSrc::can_send_NSCC`). This is the biggest single piece of phase 2.
-- **Asynchronous handler mode** (`-pcm_handler_time_ns`, plan §8 commit 10),
-  for the proposal's reaction-delay challenge. It is part of phase 1, but
-  listed here because phase 2's comparisons depend on it.
-- **Remote service time** (`uet_rx_ack_svc`) if an algorithm needs it: the ACK
+- **Remote service time** (`uet_rx_ack_svc`), if an algorithm needs it: the ACK
   field exists but is never set.
 
-Verification order: an algorithm that htsim already has (NSCC, Swift) is first
-compared with the built-in version on the same matrix. DCQCN and TIMELY are new
-here, so they are checked against the behaviour described in their papers
-(convergence and fairness on a simple incast, reaction to ECN or RTT steps).
+An algorithm htsim already has (NSCC, Swift) is first compared with the built-in
+version on the same matrices. DCQCN and TIMELY are new here, so they are checked
+against the behaviour in their papers (convergence and fairness on an incast,
+reaction to ECN or RTT steps). Every algorithm should also run on
+`incast_128.cm`: heavy trimming exposes mistakes small runs hide.
 
 ## Phase 3: scenarios
 
