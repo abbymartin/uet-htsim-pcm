@@ -3,6 +3,8 @@
 
 add_library(htsim_pcm STATIC
     pcm_accumulator.cpp
+    pcm_registry.cpp
+    pcm_runtime.cpp
     pcm_signal_state.cpp
     pcm_signals.cpp
     pcm_spec.cpp
@@ -14,6 +16,7 @@ target_link_libraries(htsim_pcm PRIVATE yaml-cpp::yaml-cpp)
 if ( ENABLE_TESTS )
     set(PCM_UNIT_TESTS
         pcm_accumulator_test
+        pcm_runtime_test
         pcm_signal_state_test
         pcm_spec_test
         pcm_trigger_test

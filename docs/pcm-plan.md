@@ -71,7 +71,7 @@ Scope decisions:
 | Signals | §3.6.18.4, Table 3-109 | Named `uet_<rx\|tx\|time>_<pkt>_<name>`, e.g. `uet_rx_ack_bytes`, `uet_rx_ack_ecn`, `uet_rx_ack_rtt`, `uet_tx_rto`, `uet_time_current`. If a YAML file uses a signal the implementation doesn't support, loading **must fail**. |
 | Accumulators | Tables 3-106, 3-107, 3-110 | How repeated updates to a signal combine: `uet_op_sum/max/min/last` (mandatory), `uet_op_ewma` (optional). All updates from one packet apply together. One signal may have several accumulators. |
 | Snapshot | §3.6.18.2 | Signal values are frozen when the handler is called. Updates that arrive while it runs count toward the next call. |
-| Triggers | §3.6.18.5 | Decide when the handler is called. Each watches one accumulator, with a comparison (`== != > >= < <= *`), a `(count, time)` threshold, `arm_mode` (DISARMED/ONCE/CONTINUOUS), `action` (INVOKE calls the handler, RECORD only notes that the trigger fired), and `invoke_deadline`. The handler reads which triggers fired with `uet_trigger_mask()` and can change them with `uet_modify_trigger()`. |
+| Triggers | §3.6.18.5 | Decide when the handler is called. Each watches one accumulator, with a comparison (`== != > >= < <= *`), a `(count, time)` threshold, `arm_mode` (DISARMED/ONCE/CONTINUOUS), `action` (INVOKE calls the handler, RECORD only notes that the trigger fired), and `invoke_deadline`. The handler reads which triggers fired with `uet_trigger_mask()`. (The spec's `uet_modify_trigger()` for changing triggers at runtime is not implemented; see §7.) |
 | Controls | §3.6.18.6.1 | What the handler sets. `uet_set_cwnd` is mandatory. Optional: `uet_set_send_rate`, `uet_set_ack_per_packet`, `uet_set_ack_gen_bytes/timer`, `uet_set_rx_cwnd_penalty`. |
 | Variables | §3.6.18.6.2 | Local variables are private to one CCC. Global variables are shared across CCCs, read as a snapshot, and changed only through their accumulator. |
 | Parameters | §3.6.18.8.5 | Constants per instance. The spec's example is two NSCC instances with different parameters, one for AI traffic and one for storage; it calls this the instance's "personality". |
@@ -148,9 +148,9 @@ in the code.
 ```
 htsim/sim/pcm/
   uet_pcm.h           the spec's API, used by handlers: uet_signal_get/set/update,
-                      uet_set_cwnd, uet_set_send_rate, uet_get/set/update_variable_*,
-                      uet_trigger_mask, uet_modify_trigger/query_trigger,
-                      uet_trigger_drop_mask, uet_ccc_fatal
+                      uet_set_cwnd, uet_get/set_variable_*, uet_trigger_mask,
+                      uet_trigger_drop_mask, uet_ccc_fatal; and the PCM_ALGORITHM /
+                      PCM_SIGNAL / ... / PCM_HANDLER macros for declaring a handler
   pcm_signals.{h,cpp} every spec signal (Tables 3-109, 3-112) with its direction and
                       unit, whether we support it, and our vendor signal
   pcm_spec.{h,cpp}    YAML loader: reads and checks an algorithm's YAML file; rejects
@@ -165,7 +165,9 @@ htsim/sim/pcm/
                       counters. It schedules its own timers (time triggers,
                       invoke_deadline, asynchronous completion) on the simulator's
                       event list, so UecSrc's timer code stays untouched.
-  pcm_registry.{h,cpp} maps the handler name in the YAML to the compiled function
+  pcm_registry.{h,cpp} the compiled handlers by name, and the YAML macros each one
+                      uses; the objects behind PCM_SIGNAL / PCM_VARIABLE /
+                      PCM_PARAMETER_*
   algorithms/
     dctcp_legacy.{yaml,cpp}   exact port of the existing DCTCP (for the exact-match test)
     dctcp.{yaml,cpp}          textbook DCTCP
@@ -174,30 +176,57 @@ htsim/sim/pcm/
 
 ### 4.2 Writing handlers like the spec does
 
-Handlers are plain functions with no arguments, as in the spec's examples:
+Handlers are plain functions with no arguments, as in the spec's examples. A
+handler file includes only `uet_pcm.h`:
 
 ```cpp
 // algorithms/dctcp.cpp
 #include "uet_pcm.h"
+
+PCM_ALGORITHM(dctcp);         // same name as cc_algorithm.name in the YAML
+PCM_SIGNAL(T_ACK);            // the YAML macros this handler uses
+PCM_SIGNAL(S_ACK_BYTES);
+PCM_VARIABLE(V_ALPHA);
+PCM_PARAMETER_FLOAT(P_G);
+
 PCM_HANDLER(dctcp) {
-    uet_trigmask_t m; uet_trigger_mask(&m);
-    uet_uint_t cwnd; uet_get_variable_uint(V_CWND, &cwnd);
-    if (m & T_ACK) { /* ... */ }
-    uet_set_cwnd(cwnd);
+    uet_trigmask_t fired = uet_trigger_mask();
+    if (fired & T_ACK) {
+        uet_int_t acked = uet_signal_get(S_ACK_BYTES);
+        /* ... */
+        uet_set_cwnd(cwnd);
+    }
 }
 ```
 
-- The simulator is single-threaded. Before each call, the runtime records which CCC
-  is being served, and the `uet_*` functions act on that CCC. Handlers therefore
-  read like the spec's C code, and could later be compiled for real hardware.
-- **Names** such as `T_ACK`, `S_ACK_BYTES` and `V_CWND` come from the `macro:`
-  fields in the YAML. The handler lists the names it uses
-  (`PCM_BIND_SIGNAL(S_ACK_BYTES)` etc.). At load time each name is matched to its
-  YAML entry, and loading fails on a mismatch. This avoids generating code during
-  the build.
+- **The handler runs for one CCC at a time.** The simulator is single-threaded.
+  Before each call, the runtime records which CCC is being served, and the
+  `uet_*` functions act on it. Handlers therefore read like the spec's C code,
+  and could later be compiled for real hardware.
+- **How loading works.** The spec leaves it to the implementation (§3.6.18.8.1).
+  Here, handlers are compiled into the simulator. `PCM_ALGORITHM` and
+  `PCM_HANDLER` register the handler under its name at program start, and a YAML
+  file's `cc_algorithm.name` selects it. One handler file holds one algorithm.
+- **Names** such as `T_ACK`, `S_ACK_BYTES` and `V_ALPHA` come from the `macro:`
+  fields in the YAML, and the handler declares the ones it uses. When a YAML file
+  is loaded, each name is matched to the file's entry. Loading fails if the
+  handler uses a name the file doesn't define, or defines as a different kind
+  (signal / variable / parameter) or type. Names the file defines but the handler
+  doesn't use give a warning. This avoids generating code during the build, and
+  lets one handler be loaded with several YAML files whose entries are in
+  different orders.
+- **A signal name works both as an index and as a mask bit**, because the spec
+  uses it both ways: `uet_signal_get(S_RTT)` takes an index, while
+  `fired & T_ACK` tests a bit (§3.6.18.5.5). The names are
+  small C++ objects that convert to the index and combine with masks as the bit.
+  Using one outside a running handler aborts the program.
 - **Parameters** are read from the loaded YAML when the program runs, not compiled
   in as constants. One compiled handler can then run with different parameter
   values from different YAML files, or with `-pcm_param NAME=VALUE`.
+- **Linking.** Because handlers register themselves at program start, their object
+  files must be linked into the simulator even though nothing calls them
+  directly. A static library would drop them, so the algorithm files will be
+  built as an object library (commit 8).
 
 ### 4.3 YAML
 
@@ -444,7 +473,8 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     requires.
 
 15. **Not yet supported, and rejected at load:** global variables (§3.6.18.6.2;
-    planned after shared CCCs), telegrams (§3.6.18.6.3), control packets
+    planned after shared CCCs; the `uet_update_variable_*` functions, which only
+    update global variables, are left out until then), telegrams (§3.6.18.6.3), control packets
     (§3.6.18.6.4), load-balancing algorithms (§3.6.18.3), and the optional controls
     other than `uet_set_cwnd`. Each gets its own note here once it's added.
 
@@ -472,6 +502,46 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     64-bit integer here. The spec gives no limit. A YAML file with more entries
     fails to load.
 
+19. **`uet_trigger_mask()` takes a pointer.** The spec never gives this function
+    a signature (every other PCM function has one in a table), and its prose and
+    example disagree (§3.6.18.5.5). The text says it "**returns** an unsigned
+    integer", but the example calls
+    `uet_trigmask_t fired_triggers; uet_trigger_mask(&fired_triggers);` and reads
+    the mask from the pointer. We use the pointer form,
+    `int uet_trigger_mask(uet_trigmask_t *mask)`, because it matches the spec's
+    other getters such as `uet_get_variable_int()`, which fill in a pointer and
+    return a status code.
+
+20. **Triggers can't be changed at runtime.** The spec's `uet_modify_trigger()` and
+    `uet_query_trigger()` (Table 3-114) aren't implemented. None of the algorithms
+    we plan to implement changes its triggers while running, and the spec doesn't
+    define their `struct uet_trigger_attr` argument. A trigger's configuration
+    comes only from the YAML file. Using either function fails to compile.
+
+21. **When the handler's changes take effect.** The spec says signal values are
+    frozen while the handler runs (§3.6.18.2) and that "control operations are
+    executed in issued order" (§3.6.18.9). It doesn't say when a handler's own
+    writes take effect. Ours:
+    - `uet_signal_set` / `uet_signal_update` change the handler's frozen copy at
+      once, so it reads back what it wrote.
+    - Those writes and `uet_set_cwnd` reach the CCC, in the order the handler made
+      them, when the handler returns.
+    - Local variables change at once, since nothing else can see them.
+
+22. **What counts as an invalid operation.** The spec says an invalid operation,
+    "including (but not limited to) illegal PCM API usage or out-of-range index
+    access", puts the CCC into the ERROR state, and leaves the error values to the
+    implementation (§3.6.18.7). Ours, with their values (`PcmImplementationError`
+    in `pcm_runtime.h`):
+    - a signal or variable index out of range;
+    - a variable read or written with the function for a different `dtype`;
+    - `uet_set_cwnd` when the YAML has no `uet_tx_cwnd` control;
+    - `uet_set_cwnd(0)`: a window of 0 would stop the flow for good;
+    - a null pointer argument.
+
+    Using a PCM function or macro outside a running handler is a programming
+    error in the simulator, not a CCC error, and aborts the program.
+
 ## 8. Commit plan
 
 Each commit builds, passes `ctest`, and leaves non-PCM behaviour unchanged.
@@ -493,7 +563,7 @@ adds its §7 entry and code comment in the same commit.
 4. [x] **pcm: accumulators and triggers.** All accumulators (including several per
    signal) and the full trigger behaviour from §3.6.18.5 plus §7 items 1, 2 and 4.
    Unit tests.
-5. [ ] **pcm: calling handlers.** The `uet_pcm.h` API; tracking which CCC is being
+5. [x] **pcm: calling handlers.** The `uet_pcm.h` API; tracking which CCC is being
    served; matching YAML names; frozen values and applying controls; synchronous
    calls; ERROR state; counters. Unit tests that feed events directly, with no
    network.
