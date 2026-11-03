@@ -19,6 +19,7 @@ if ( ENABLE_TESTS )
         pcm_runtime_test
         pcm_signal_state_test
         pcm_spec_test
+        pcm_timer_test
         pcm_trigger_test
     )
     foreach(TEST_NAME ${PCM_UNIT_TESTS})

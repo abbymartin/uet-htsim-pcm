@@ -138,6 +138,30 @@ signal:
               invoke_deadline: 0}
 )";
 
+// Only triggers on uet_time_* signals need timer events; an ACK trigger's time
+// condition is checked at the next ACK.
+TEST(PcmSignalStateEvaluation, NextTimeDueOnlyForTimeSignals) {
+    PcmSpec spec = pcmParseSpec(kHeader + R"(
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 0 5, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+)", "test.yaml");
+    PcmSignalState state(spec, 0);
+    EXPECT_FALSE(state.nextTimeDue().has_value());
+}
+
+TEST(PcmSignalStateEvaluation, RefreshDoesNotCheckTriggers) {
+    PcmSpec spec = pcmParseSpec(kHeader + kEvery2Acks, "test.yaml");
+    PcmSignalState state(spec, 0);
+    state.refresh({{sig("uet_rx_ack"), 1}});
+    EXPECT_EQ(state.get(0), 1);
+    EXPECT_EQ(state.trigger(0)->trueCount(), 0u);
+    EXPECT_EQ(state.counters().evaluations, 0u);
+}
+
 // A trigger is only checked when the event updated its own signal.
 TEST(PcmSignalStateEvaluation, OnlyTriggersOfUpdatedSignalsAreChecked) {
     PcmSpec spec = pcmParseSpec(kHeader + kEvery2Acks, "test.yaml");

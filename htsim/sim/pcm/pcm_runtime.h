@@ -21,6 +21,7 @@
 // the ERROR state: nothing from that call is applied, and the CCC never calls
 // its handler again (§3.6.18.7).
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -86,7 +87,10 @@ struct PcmFatalError {
 
 class PcmCcc {
 public:
-    PcmCcc(std::shared_ptr<const PcmAlgorithm> algo, PcmTime now, std::string name = "");
+    // `units` are the units handlers see signal values in. Signal updates
+    // passed to onEvent() must already be in those units.
+    PcmCcc(std::shared_ptr<const PcmAlgorithm> algo, PcmTime now, std::string name = "",
+           PcmUnits units = PcmUnits::SPEC);
     PcmCcc(const PcmCcc&) = delete;
     PcmCcc& operator=(const PcmCcc&) = delete;
 
@@ -95,8 +99,31 @@ public:
     void onEvent(const std::vector<PcmSignalUpdate>& updates, PcmTime now);
 
     // Call the handler now, delivering every trigger fired since the last call.
-    // Used when an invoke_deadline is reached. Does nothing in the ERROR state.
+    // Does nothing in the ERROR state.
     void invoke(PcmTime now);
+
+    // --- Timers ---
+    //
+    // A CCC needs to act at given times: when a trigger on a uet_time_* signal
+    // is due, and when an invoke_deadline is reached. It asks the datapath for a
+    // call to onTimer() at that time through the scheduler function. The
+    // datapath may call onTimer() at other times too; a call when nothing is
+    // due does nothing.
+
+    // Called with the time at which onTimer() should next be called. A new
+    // request may be earlier than one made before; a later or repeated call to
+    // onTimer() is harmless.
+    using Scheduler = std::function<void(PcmTime when)>;
+    void setScheduler(Scheduler scheduler, PcmTime now);
+
+    // A timer event: update the uet_time_* signals and check their triggers,
+    // then call the handler if an invoke_deadline has been reached.
+    void onTimer(PcmTime now);
+
+    // When onTimer() next needs to be called, if at all.
+    std::optional<PcmTime> nextWakeup() const;
+
+    PcmUnits units() const { return _units; }
 
     // The congestion window set by the handler, or the uet_tx_cwnd control's
     // initial_value. Empty if the file has no uet_tx_cwnd control.
@@ -117,8 +144,10 @@ public:
     const std::string& name() const { return _name; }
 
     struct Counters {
-        uint64_t invocations = 0;   // handler calls
-        uint64_t cwnd_updates = 0;  // uet_set_cwnd calls applied
+        uint64_t invocations = 0;           // handler calls
+        uint64_t deadline_invocations = 0;  // of which made because a deadline was reached
+        uint64_t timer_events = 0;          // onTimer() calls
+        uint64_t cwnd_updates = 0;          // uet_set_cwnd calls applied
     };
     const Counters& counters() const { return _counters; }
 
@@ -145,6 +174,11 @@ private:
     // Enter the ERROR state (once; later errors are ignored, §3.6.18.7.3).
     void fail(PcmErrorSource source, int value, const std::string& message);
     bool checkSignal(unsigned idx);
+    // The uet_time_* signal values at `now`, in handler units.
+    std::vector<PcmSignalUpdate> timeSignals(PcmTime now) const;
+    // Ask the scheduler for an onTimer() call if one is needed earlier than
+    // already requested.
+    void requestWakeup(PcmTime now);
 
     // A change made by the handler, applied when it returns.
     struct Op {
@@ -155,6 +189,7 @@ private:
 
     std::shared_ptr<const PcmAlgorithm> _algo;
     std::string _name;
+    PcmUnits _units;
     PcmSignalState _signals;
     std::vector<PcmValue> _variables;
     std::optional<uint64_t> _cwnd;
@@ -162,6 +197,10 @@ private:
 
     PcmTriggerMask _pending_mask = 0;  // fired since the last call
     std::optional<PcmTime> _deadline;
+
+    Scheduler _scheduler;
+    std::optional<PcmTime> _scheduled;  // earliest onTimer() call requested
+    PcmTime _last_update = 0;           // last event that updated a signal
 
     // Only valid during an invocation.
     PcmTriggerMask _delivered_mask = 0;

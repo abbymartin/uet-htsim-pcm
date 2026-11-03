@@ -162,9 +162,12 @@ htsim/sim/pcm/
                       updated signals
   pcm_runtime.{h,cpp} class PcmCcc, one per CCC (§4.5): signal state, snapshot,
                       calling the handler, applying controls, ERROR state,
-                      counters. It schedules its own timers (time triggers,
-                      invoke_deadline, asynchronous completion) on the simulator's
-                      event list, so UecSrc's timer code stays untouched.
+                      counters. When it needs to act at a given time (time
+                      triggers, invoke_deadline, asynchronous completion), it asks
+                      the datapath through a scheduling callback, and the datapath
+                      calls PcmCcc::onTimer() then. The pcm/ library therefore
+                      doesn't depend on htsim, and UecSrc's timer code stays
+                      untouched.
   pcm_registry.{h,cpp} the compiled handlers by name, and the YAML macros each one
                       uses; the objects behind PCM_SIGNAL / PCM_VARIABLE /
                       PCM_PARAMETER_*
@@ -260,9 +263,13 @@ PCM_HANDLER(dctcp) {
   under load but doesn't require it, so never skipping is within the spec. All
   events go through one function, so a drop model can be added there later.
   `uet_trigger_drop_mask()` exists and always reports no drops.
-- **Time triggers** schedule a wake-up on the simulator's event list.
-  `invoke_deadline` follows §3.6.18.5.3: the CCC's next deadline is
-  `min(current deadline, now + trigger.invoke_deadline)`.
+- **Timers.** A trigger on a `uet_time_*` signal, or a pending `invoke_deadline`,
+  makes the CCC ask for an `onTimer()` call at the time it's due. A timer event
+  updates the `uet_time_*` signals and checks their triggers, then calls the
+  handler if a deadline has been reached. Triggers on other signals check their
+  time condition when their signal is next updated. `invoke_deadline` follows
+  §3.6.18.5.3: the CCC's deadline is `min(current deadline, now +
+  trigger.invoke_deadline)`.
 - **The runtime doesn't clamp the window.** Keeping the window within bounds is the
   algorithm's job, as in the spec. The runtime only rejects impossible values
   (cwnd = 0, overflow) by putting the CCC into the ERROR state. Clamping would also
@@ -410,7 +417,9 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
 
 6. **Added: native units** (`-pcm_units native`), which pass picoseconds and bytes
    to handlers instead of the spec's 128 ns / 256 B units. It's only for the
-   exact-match test; spec units are the default.
+   exact-match test; spec units are the default. In spec units, values are
+   truncated to whole units (e.g. a 4150 B ACK counts as 16 × 256 B), as hardware
+   counting in those units would; the spec doesn't say how to round.
 
 7. **Flow grouping differs slightly.** The spec requires all RUD connections
    between the same two NICs in the same traffic class to share one CCC
@@ -556,6 +565,24 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     Using a PCM function or macro outside a running handler is a programming
     error in the simulator, not a CCC error, and aborts the program.
 
+23. **Handlers always read the current time.** The spec updates the `uet_time_*`
+    signals only on timer events (§3.6.18.5.3). A handler called for an ACK
+    would then read the time of the last timer event, which could be long ago,
+    or never if the algorithm has no timer. So just before each handler call,
+    `uet_time_current` is set to the current time and `uet_time_last_update` to
+    the time of the last event that updated a signal. Their triggers are not
+    checked then; those are still only checked on timer events. The time
+    signals' own updates don't count as "a signal update" for
+    `uet_time_last_update`.
+
+24. **A deferred call happens at its deadline.** `invoke_deadline` is "an upper
+    bound on how long an invoke action may be deferred" (§3.6.18.5.1), so any
+    time up to the deadline would be allowed. We call the handler at the
+    deadline itself, the latest allowed, so that triggers firing in the
+    meantime are combined into that one call; this is what makes the deadline a
+    coalescing setting. An immediate (deadline 0) trigger before then delivers
+    the deferred one with it, earlier.
+
 ## 8. Commit plan
 
 Each commit builds, passes `ctest`, and leaves non-PCM behaviour unchanged.
@@ -581,11 +608,13 @@ adds its §7 entry and code comment in the same commit.
    served; matching YAML names; frozen values and applying controls; synchronous
    calls; ERROR state; counters. Unit tests that feed events directly, with no
    network.
-6. [ ] **pcm: time triggers and `invoke_deadline`.** Timers on the event list;
-   unit tests.
+6. [x] **pcm: time triggers and `invoke_deadline`.** The CCC asks for timer
+   events through a scheduling callback; time signals and units; unit tests
+   with a fake clock.
 7. [ ] **uec: connect PCM to the sender.** `PCM` enum; ACK/NACK/send/timeout calls
-   into per-flow CCCs; options `-pcm`, `-pcm_param`, `-pcm_units`; counters on the
-   flow finish line and in the summary; `commit_check.sh`.
+   into per-flow CCCs; the CCC's timer requests on htsim's event list; options
+   `-pcm`, `-pcm_param`, `-pcm_units`; counters on the flow finish line and in
+   the summary; `commit_check.sh`.
 8. [ ] **pcm: `dctcp_legacy` and the exact-match test**, as ctest or a script.
 9. [ ] **pcm: `dctcp`.** Textbook DCTCP, a unit test of α, and incast/permutation
    sanity runs.

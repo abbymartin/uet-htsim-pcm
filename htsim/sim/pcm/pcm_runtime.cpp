@@ -90,23 +90,96 @@ bool PcmCcc::print_errors = true;
 
 PcmCcc* PcmCcc::current() { return g_current; }
 
-PcmCcc::PcmCcc(std::shared_ptr<const PcmAlgorithm> algo, PcmTime now, std::string name)
-    : _algo(std::move(algo)), _name(std::move(name)), _signals(_algo->spec(), now) {
+PcmCcc::PcmCcc(std::shared_ptr<const PcmAlgorithm> algo, PcmTime now, std::string name,
+               PcmUnits units)
+    : _algo(std::move(algo)),
+      _name(std::move(name)),
+      _units(units),
+      _signals(_algo->spec(), now),
+      _last_update(now) {
     for (const auto& v : _algo->spec().variables)
         _variables.push_back(initialValue(v));
     if (auto c = _algo->cwndControl())
         _cwnd = _algo->spec().controls[*c].initial_value;
 }
 
+std::vector<PcmSignalUpdate> PcmCcc::timeSignals(PcmTime now) const {
+    static const PcmSignalInfo* current = pcmFindSignal("uet_time_current");
+    static const PcmSignalInfo* last_update = pcmFindSignal("uet_time_last_update");
+    return {{current, pcmToSignalUnits(current->unit, int64_t(now), _units)},
+            {last_update, pcmToSignalUnits(last_update->unit, int64_t(_last_update), _units)}};
+}
+
 void PcmCcc::onEvent(const std::vector<PcmSignalUpdate>& updates, PcmTime now) {
     if (_error)
         return;
+    const uint64_t updates_before = _signals.counters().signal_updates;
     PcmFired f = _signals.applyEvent(updates, now);
+    // uet_time_last_update: "timestamp of last signal update of any configured
+    // signal" (Table 3-109).
+    if (_signals.counters().signal_updates != updates_before)
+        _last_update = now;
     _pending_mask |= f.mask;
     if (f.invoke_by)
         _deadline = _deadline ? std::min(*_deadline, *f.invoke_by) : *f.invoke_by;
     if (f.invoke_now)
         invoke(now);
+    requestWakeup(now);
+}
+
+void PcmCcc::setScheduler(Scheduler scheduler, PcmTime now) {
+    _scheduler = std::move(scheduler);
+    _scheduled.reset();
+    requestWakeup(now);
+}
+
+std::optional<PcmTime> PcmCcc::nextWakeup() const {
+    if (_error)
+        return std::nullopt;
+    std::optional<PcmTime> due = _signals.nextTimeDue();
+    if (_deadline && (!due || *_deadline < *due))
+        due = _deadline;
+    return due;
+}
+
+void PcmCcc::requestWakeup(PcmTime now) {
+    if (!_scheduler)
+        return;
+    std::optional<PcmTime> when = nextWakeup();
+    if (!when)
+        return;
+    PcmTime at = std::max(*when, now);
+    if (_scheduled && *_scheduled <= at)
+        return;  // an earlier or equal call is already requested
+    _scheduled = at;
+    _scheduler(at);
+}
+
+void PcmCcc::onTimer(PcmTime now) {
+    if (_error)
+        return;
+    _counters.timer_events++;
+    if (_scheduled && now >= *_scheduled)
+        _scheduled.reset();
+
+    // A timer event updates the uet_time_* signals and checks their triggers
+    // (§3.6.18.5.3).
+    PcmFired f = _signals.applyEvent(timeSignals(now), now);
+    _pending_mask |= f.mask;
+    if (f.invoke_by)
+        _deadline = _deadline ? std::min(*_deadline, *f.invoke_by) : *f.invoke_by;
+
+    if (f.invoke_now) {
+        invoke(now);
+    } else if (_deadline && now >= *_deadline) {
+        // invoke_deadline is "an upper bound on how long an invoke action may be
+        // deferred" (§3.6.18.5.1). We defer to the deadline itself, the latest
+        // allowed, so that triggers firing meanwhile are combined into the same
+        // call. See docs/pcm-plan.md §7.
+        _counters.deadline_invocations++;
+        invoke(now);
+    }
+    requestWakeup(now);
 }
 
 void PcmCcc::invoke(PcmTime now) {
@@ -119,6 +192,12 @@ void PcmCcc::invoke(PcmTime now) {
     _delivered_mask = _pending_mask;
     _pending_mask = 0;
     _deadline.reset();
+
+    // The spec only updates the uet_time_* signals on timer events, so a handler
+    // called for an ACK would read the time of the last timer event. Give them
+    // their current values first, without checking their triggers, so handlers
+    // always read the current time. See docs/pcm-plan.md §7.
+    _signals.refresh(timeSignals(now));
 
     _snapshot.clear();
     for (size_t i = 0; i < _signals.size(); i++)
@@ -153,6 +232,7 @@ void PcmCcc::invoke(PcmTime now) {
     }
     _ops.clear();
     _snapshot.clear();
+    requestWakeup(now);
 }
 
 void PcmCcc::fail(PcmErrorSource source, int value, const std::string& message) {

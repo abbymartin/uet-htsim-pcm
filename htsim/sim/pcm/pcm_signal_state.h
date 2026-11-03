@@ -60,6 +60,10 @@ public:
     // (§3.6.18.9) can be added here later.
     PcmFired applyEvent(const std::vector<PcmSignalUpdate>& updates, PcmTime now);
 
+    // Apply updates without checking any triggers. Used to give the time
+    // signals their current value before the handler is called.
+    void refresh(const std::vector<PcmSignalUpdate>& updates);
+
     size_t size() const { return _entries.size(); }
     static PcmTriggerMask bit(size_t i) { return PcmTriggerMask(1) << i; }
 
@@ -74,7 +78,10 @@ public:
     void set(size_t i, int64_t value) { _entries[i].acc.set(value); }
     void update(size_t i, int64_t value) { _entries[i].acc.update(value); }
 
-    // Earliest time at which an armed trigger's time condition is met.
+    // Earliest time at which an armed trigger on a uet_time_* signal meets its
+    // time condition. Only these are checked on timer events (§3.6.18.5.3), so
+    // the runtime schedules a timer event for this time. A trigger on another
+    // signal checks its time condition when that signal is next updated.
     std::optional<PcmTime> nextTimeDue() const;
 
     struct Counters {

@@ -97,3 +97,18 @@ const PcmSignalInfo* pcmFindSignal(const std::string& name) {
 }
 
 const std::vector<PcmSignalInfo>& pcmAllSignals() { return kSignals; }
+
+int64_t pcmToSignalUnits(PcmUnit unit, int64_t value, PcmUnits units) {
+    if (units == PcmUnits::NATIVE)
+        return value;
+    switch (unit) {
+    case PcmUnit::TIME_128NS:
+        return value / 128000;  // picoseconds -> 128 ns
+    case PcmUnit::BYTES_256:
+        return value / 256;
+    default:
+        // Counts, bytes and booleans are the same in both. Rates and percentages
+        // belong to signals the simulator doesn't support yet.
+        return value;
+    }
+}

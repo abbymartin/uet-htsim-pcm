@@ -74,10 +74,22 @@ PcmFired PcmSignalState::applyEvent(const std::vector<PcmSignalUpdate>& updates,
     return fired;
 }
 
+void PcmSignalState::refresh(const std::vector<PcmSignalUpdate>& updates) {
+    for (const auto& u : updates) {
+        auto it = _by_signal.find(u.signal);
+        if (it == _by_signal.end())
+            continue;
+        for (size_t i : it->second) {
+            _entries[i].acc.update(u.value);
+            _counters.signal_updates++;
+        }
+    }
+}
+
 std::optional<PcmTime> PcmSignalState::nextTimeDue() const {
     std::optional<PcmTime> due;
     for (const auto& e : _entries) {
-        if (!e.trigger)
+        if (!e.trigger || e.spec->info->dir != PcmSignalDir::TIME)
             continue;
         auto t = e.trigger->timeDue();
         if (t && (!due || *t < *due))

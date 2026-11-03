@@ -6,6 +6,7 @@
 // 3-112), plus the vendor-specific signals this simulator adds, and which of
 // them the simulator supports.
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,20 @@ struct PcmSignalInfo {
     bool vendor;     // vendor-specific signal added by this simulator
     bool supported;  // implemented by this simulator
 };
+
+// Which units handlers see signal values in.
+//   SPEC:   the spec's units (Table 3-109), e.g. time in 128 ns, ACK bytes in
+//           256 B. This is the default.
+//   NATIVE: the simulator's own units: time in picoseconds, bytes in bytes.
+//           Not in the spec; used to check that a PCM port of an existing
+//           algorithm behaves exactly like the original (docs/pcm-plan.md §7).
+enum class PcmUnits { SPEC, NATIVE };
+
+// Convert a value in the simulator's units (picoseconds for time, bytes for
+// bytes) to the units handlers see for a signal of this unit. Spec units are
+// whole units, so values are truncated, as hardware counting in those units
+// would (docs/pcm-plan.md §7).
+int64_t pcmToSignalUnits(PcmUnit unit, int64_t value, PcmUnits units);
 
 // Returns the signal with this exact name, or nullptr if the name is not a
 // spec or vendor signal.
