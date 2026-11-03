@@ -155,8 +155,13 @@ htsim/sim/pcm/
                       unit, whether we support it, and our vendor signal
   pcm_spec.{h,cpp}    YAML loader: reads and checks an algorithm's YAML file; rejects
                       anything we don't support
-  pcm_runtime.{h,cpp} class PcmCcc, one per CCC (§4.5): accumulators, triggers,
-                      snapshot, calling the handler, applying controls, ERROR state,
+  pcm_accumulator.{h,cpp}  one accumulated signal value (sum/max/min/last/ewma)
+  pcm_trigger.{h,cpp}      one trigger's state machine (§3.6.18.5)
+  pcm_signal_state.{h,cpp} all accumulators and triggers of one CCC; applies one
+                      event's updates together, then checks the triggers of the
+                      updated signals
+  pcm_runtime.{h,cpp} class PcmCcc, one per CCC (§4.5): signal state, snapshot,
+                      calling the handler, applying controls, ERROR state,
                       counters. It schedules its own timers (time triggers,
                       invoke_deadline, asynchronous completion) on the simulator's
                       event list, so UecSrc's timer code stays untouched.
@@ -357,7 +362,8 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
    the spec's note that algorithms should handle counter wraparound. A handler that
    wants "since the last call" values resets a signal itself with
    `uet_signal_set()`. We support `uet_signal_set()` and `uet_signal_update()`,
-   which are optional in the spec.
+   which are optional in the spec. To restart a MIN accumulator, set it back to
+   its starting value, the largest 64-bit integer (item 16).
 
 4. **Added: DELTA and MAGNITUDE triggers, taken from the paper.** The spec has
    only one kind of trigger, comparing the accumulator's value. The paper's PCM
@@ -442,6 +448,30 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     (§3.6.18.6.4), load-balancing algorithms (§3.6.18.3), and the optional controls
     other than `uet_set_cwnd`. Each gets its own note here once it's added.
 
+16. **Signal values before the first update.** The spec says a loaded algorithm
+    has "initial values for new CCCs" for its signals (§3.6.18.8.1), but the YAML
+    format has no field for them. Each accumulator starts at the value that has
+    no effect on its operation:
+    - SUM, LAST and MAX start at 0. Spec signals are unsigned, so 0 is below
+      every sample.
+    - MIN starts at the largest 64-bit integer. A handler that reads this value
+      knows no sample has arrived yet, e.g. no RTT measured before the first ACK.
+      It should check for this before doing arithmetic with it.
+    - EWMA reads 0 until its first update, which is stored as it is. Table
+      3-107's formula needs a previous average, and there is none yet.
+
+17. **`invoke_deadline` applies when a trigger fires.** The trigger definition
+    says it is an "upper bound on how long an invoke action may be deferred after
+    trigger fires" (§3.6.18.5.1). The evaluation rules say the CCC's deadline is
+    updated "for every evaluated trigger" (§3.6.18.5.3). We update it only for
+    INVOKE triggers that fired, since a trigger that didn't fire has nothing to
+    defer.
+
+18. **At most 64 signal entries per algorithm.** Each entry has one bit in the
+    trigger mask that the handler reads with `uet_trigger_mask()`, which is a
+    64-bit integer here. The spec gives no limit. A YAML file with more entries
+    fails to load.
+
 ## 8. Commit plan
 
 Each commit builds, passes `ctest`, and leaves non-PCM behaviour unchanged.
@@ -460,7 +490,7 @@ adds its §7 entry and code comment in the same commit.
 3. [x] **pcm: YAML loader.** The `htsim_pcm` library; reads and checks the
    §3.6.18.8.5 format plus our `op_val` and `trigger_type` additions; rejects
    unsupported signals, controls and features. Unit tests.
-4. [ ] **pcm: accumulators and triggers.** All accumulators (including several per
+4. [x] **pcm: accumulators and triggers.** All accumulators (including several per
    signal) and the full trigger behaviour from §3.6.18.5 plus §7 items 1, 2 and 4.
    Unit tests.
 5. [ ] **pcm: calling handlers.** The `uet_pcm.h` API; tracking which CCC is being
