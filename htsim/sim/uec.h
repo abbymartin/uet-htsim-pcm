@@ -231,6 +231,9 @@ public:
     static std::shared_ptr<const PcmAlgorithm> _pcm_algorithm;
     static std::map<std::string, std::shared_ptr<const PcmAlgorithm>> _pcm_group_algorithms;
     static PcmUnits _pcm_units;
+    // How long each PCM handler call takes; 0 means synchronous
+    // (-pcm_handler_time_ns, docs/pcm-plan.md §4.4).
+    static simtime_picosec _pcm_handler_time;
 
     // Put this flow in a PCM flow group (docs/pcm-plan.md §4.5). Flows with the
     // same group name, source NIC and destination NIC share one CCC: one

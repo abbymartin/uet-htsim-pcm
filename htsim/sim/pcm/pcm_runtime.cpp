@@ -2,6 +2,7 @@
 #include "pcm_runtime.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdlib>
 #include <iostream>
 #include <map>
@@ -139,6 +140,8 @@ std::optional<PcmTime> PcmCcc::nextWakeup() const {
     std::optional<PcmTime> due = _signals.nextTimeDue();
     if (_deadline && (!due || *_deadline < *due))
         due = _deadline;
+    if (_busy_until && (!due || *_busy_until < *due))
+        due = _busy_until;
     return due;
 }
 
@@ -162,6 +165,19 @@ void PcmCcc::onTimer(PcmTime now) {
     if (_scheduled && now >= *_scheduled)
         _scheduled.reset();
 
+    // Asynchronous mode: a call in progress finishes, its changes take effect,
+    // and a call that was asked for meanwhile starts.
+    if (_busy_until && now >= *_busy_until) {
+        _busy_until.reset();
+        commit(now);
+        if (_error)
+            return;
+        if (_invoke_pending) {
+            _invoke_pending = false;
+            invoke(now);
+        }
+    }
+
     // A timer event updates the uet_time_* signals and checks their triggers
     // (§3.6.18.5.3).
     PcmFired f = _signals.applyEvent(timeSignals(now), now);
@@ -176,15 +192,33 @@ void PcmCcc::onTimer(PcmTime now) {
         // deferred" (§3.6.18.5.1). We defer to the deadline itself, the latest
         // allowed, so that triggers firing meanwhile are combined into the same
         // call. See docs/pcm-plan.md §7.
-        _counters.deadline_invocations++;
+        if (!_busy_until)
+            _counters.deadline_invocations++;
         invoke(now);
     }
+    // Everything due by now has been handled; anything still due would make
+    // the CCC ask for timer events at this same time forever.
+    assert(!nextWakeup() || *nextWakeup() > now);
     requestWakeup(now);
 }
+
+void PcmCcc::setHandlerTime(PcmTime t) { _handler_time = t; }
 
 void PcmCcc::invoke(PcmTime now) {
     if (_error)
         return;
+    // Asynchronous mode: at most one call at a time (§3.6.18.9). A call asked
+    // for while one is in progress starts when it finishes, and delivers every
+    // trigger fired until then.
+    if (_busy_until) {
+        _invoke_pending = true;
+        _counters.requests_while_busy++;
+        // The pending call delivers deferred triggers too, so a deadline no
+        // longer needs a timer event of its own. (Keeping it would ask for a
+        // timer event at a time that has already passed, again and again.)
+        _deadline.reset();
+        return;
+    }
     _counters.invocations++;
 
     // All fired triggers are delivered in this one call (§3.6.18.5.3), including
@@ -215,7 +249,20 @@ void PcmCcc::invoke(PcmTime now) {
         _ops.clear();
         return;
     }
+    _snapshot.clear();
 
+    if (_handler_time == 0) {
+        commit(now);
+    } else {
+        // Asynchronous mode: the handler has run on the signal values as they
+        // were now; its changes take effect when the call finishes, after the
+        // handler time. See docs/pcm-plan.md §7.
+        _busy_until = now + _handler_time;
+        requestWakeup(now);
+    }
+}
+
+void PcmCcc::commit(PcmTime now) {
     for (const Op& op : _ops) {
         switch (op.kind) {
         case Op::SIGNAL_SET:
@@ -231,7 +278,6 @@ void PcmCcc::invoke(PcmTime now) {
         }
     }
     _ops.clear();
-    _snapshot.clear();
     requestWakeup(now);
 }
 

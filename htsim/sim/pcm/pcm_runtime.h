@@ -17,6 +17,11 @@
 //   4. the handler's signal writes and control settings are applied, in the
 //      order it made them ("control operations are executed in issued order",
 //      §3.6.18.9).
+// In asynchronous mode (a handler time T > 0, set with setHandlerTime), step 4
+// happens T after the call starts, at a timer event. Until then the CCC is
+// busy: events still update signals and fire triggers, and a call asked for
+// meanwhile starts when the busy one finishes. This models a NIC that takes T
+// to run the handler (PCM paper §5.3, §7.3).
 // If the handler calls uet_ccc_fatal() or uses the API wrongly, the CCC enters
 // the ERROR state: nothing from that call is applied, and the CCC never calls
 // its handler again (§3.6.18.7).
@@ -123,6 +128,15 @@ public:
     // When onTimer() next needs to be called, if at all.
     std::optional<PcmTime> nextWakeup() const;
 
+    // How long each handler call takes. 0 (the default) means synchronous:
+    // the handler's changes take effect at once. Anything else is asynchronous
+    // mode (see the top of this file); it needs a scheduler.
+    void setHandlerTime(PcmTime t);
+    PcmTime handlerTime() const { return _handler_time; }
+
+    // A handler call is in progress (asynchronous mode only).
+    bool busy() const { return _busy_until.has_value(); }
+
     PcmUnits units() const { return _units; }
 
     // The congestion window set by the handler, or the uet_tx_cwnd control's
@@ -148,6 +162,8 @@ public:
         uint64_t deadline_invocations = 0;  // of which made because a deadline was reached
         uint64_t timer_events = 0;          // onTimer() calls
         uint64_t cwnd_updates = 0;          // uet_set_cwnd calls applied
+        uint64_t requests_while_busy = 0;   // calls asked for while one was in
+                                            // progress (asynchronous mode)
     };
     const Counters& counters() const { return _counters; }
 
@@ -179,6 +195,8 @@ private:
     // Ask the scheduler for an onTimer() call if one is needed earlier than
     // already requested.
     void requestWakeup(PcmTime now);
+    // Apply the handler's changes from the last call.
+    void commit(PcmTime now);
 
     // A change made by the handler, applied when it returns.
     struct Op {
@@ -202,7 +220,11 @@ private:
     std::optional<PcmTime> _scheduled;  // earliest onTimer() call requested
     PcmTime _last_update = 0;           // last event that updated a signal
 
-    // Only valid during an invocation.
+    PcmTime _handler_time = 0;          // 0: synchronous
+    std::optional<PcmTime> _busy_until; // a call in progress finishes then
+    bool _invoke_pending = false;       // a call was asked for while busy
+
+    // Only valid during an invocation (_ops until its changes are applied).
     PcmTriggerMask _delivered_mask = 0;
     std::vector<PcmAccumulator> _snapshot;
     std::vector<Op> _ops;

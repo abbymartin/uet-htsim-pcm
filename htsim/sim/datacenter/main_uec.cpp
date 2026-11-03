@@ -66,6 +66,7 @@ static const char * help =
 "\t[-ar_sticky_delta NUM] [-ar_granularity STR]\n"
 "\t[-ar_method STR] [-strat STR]\n"
 "\t[-pcm FNAME] [-pcm_ccc STR] [-pcm_param STR] [-pcm_units STR]\n"
+"\t[-pcm_handler_time_ns UINT]\n"
 "\n"
 "Notes:\n"
 " FNAME: File name\n"
@@ -113,6 +114,11 @@ static const char * help =
 "                        GROUP:NAME=VALUE. May be repeated.\n"
 "  -pcm_units STR        Units of the signal values PCM handlers see.\n"
 "                        Choices: spec, native. Default: spec\n"
+"  -pcm_handler_time_ns UINT\n"
+"                        How long each PCM handler call takes (ns). A window\n"
+"                        set by the handler takes effect this long after the\n"
+"                        call starts, and calls asked for meanwhile are\n"
+"                        combined into one. Default: 0 (immediate)\n"
 "  -sender_cc            Enable Sender based Congestion Control.\n"
 "                        Default: True.\n"
 "  -receiver_cc          Enable Receiver based Congestion Control.\n"
@@ -265,6 +271,7 @@ int main(int argc, char **argv) {
     std::map<std::string, std::string> pcm_group_files;  // -pcm_ccc GROUP=FNAME
     std::vector<std::string> pcm_params;           // -pcm_param
     bool pcm_units_set = false;                    // -pcm_units
+    bool pcm_handler_time_set = false;             // -pcm_handler_time_ns
     double pcie_rate = 1.1;
 
     filename << "logout.dat";
@@ -688,6 +695,10 @@ int main(int argc, char **argv) {
             }
             pcm_units_set = true;
             i++;
+        } else if (!strcmp(argv[i],"-pcm_handler_time_ns")) {
+            UecSrc::_pcm_handler_time = timeFromNs(atof(argv[i+1]));
+            pcm_handler_time_set = true;
+            i++;
         } else if (!strcmp(argv[i],"-help")) {
             exit_error(argv[0]);
         } else {
@@ -768,10 +779,13 @@ int main(int argc, char **argv) {
             exit(1);
         }
     } else if (!pcm_file.empty() || !pcm_group_files.empty() || !pcm_params.empty() ||
-               pcm_units_set) {
-        cout << "-pcm, -pcm_ccc, -pcm_param and -pcm_units need -sender_cc_algo pcm" << endl;
+               pcm_units_set || pcm_handler_time_set) {
+        cout << "The -pcm* options need -sender_cc_algo pcm" << endl;
         exit(1);
     }
+    if (UecSrc::_pcm_algorithm && UecSrc::_pcm_handler_time > 0)
+        cout << "PCM: handler calls take " << timeAsUs(UecSrc::_pcm_handler_time) * 1000
+             << " ns" << endl;
     Packet::set_packet_size(packet_size);
 
 
@@ -1287,7 +1301,7 @@ int main(int argc, char **argv) {
 
     if (UecSrc::_pcm_algorithm) {
         uint64_t ccc_count = 0, events = 0, calls = 0, deadline_calls = 0, timer_events = 0,
-                 cwnd_updates = 0, errors = 0;
+                 cwnd_updates = 0, while_busy = 0, errors = 0;
         std::set<const PcmCcc*> seen;  // flows in a group share one CCC
         for (UecSrc* src : uec_srcs) {
             const PcmCcc* c = src->pcm();
@@ -1299,11 +1313,13 @@ int main(int argc, char **argv) {
             deadline_calls += c->counters().deadline_invocations;
             timer_events += c->counters().timer_events;
             cwnd_updates += c->counters().cwnd_updates;
+            while_busy += c->counters().requests_while_busy;
             errors += c->inError() ? 1 : 0;
         }
         cout << "PCM: CCCs: " << ccc_count << " Events: " << events << " Calls: " << calls
              << " DeadlineCalls: " << deadline_calls << " TimerEvents: " << timer_events
-             << " CwndUpdates: " << cwnd_updates << " Errors: " << errors << endl;
+             << " CwndUpdates: " << cwnd_updates << " RequestsWhileBusy: " << while_busy
+             << " Errors: " << errors << endl;
     }
     /*
     list <const Route*>::iterator rt_i;

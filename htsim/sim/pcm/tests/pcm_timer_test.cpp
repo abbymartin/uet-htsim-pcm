@@ -287,3 +287,91 @@ TEST_F(PcmTimerTest, NoTimersInErrorState) {
     EXPECT_EQ(ccc.counters().invocations, 1u);
     EXPECT_EQ(ccc.counters().timer_events, 0u);
 }
+
+// --- Asynchronous mode (a handler time) -----------------------------------------
+
+// The handler's window takes effect a handler time after the call starts.
+TEST_F(PcmTimerTest, AsyncChangesTakeEffectAfterHandlerTime) {
+    PcmCcc ccc(algo(), 0);
+    FakeClock clock;
+    ccc.setHandlerTime(2 * kUnit);
+    ccc.setScheduler(clock.scheduler(), 0);
+    timed::body = [] { uet_set_cwnd(2000); };
+
+    ccc.onEvent(ack(), 1 * kUnit);
+    EXPECT_EQ(ccc.counters().invocations, 1u);
+    EXPECT_TRUE(ccc.busy());
+    EXPECT_EQ(ccc.cwnd().value(), 1000u);  // not yet
+    EXPECT_EQ(ccc.nextWakeup().value(), 3 * kUnit);
+
+    clock.runUntil(ccc, 3 * kUnit);
+    EXPECT_FALSE(ccc.busy());
+    EXPECT_EQ(ccc.cwnd().value(), 2000u);
+    EXPECT_EQ(ccc.counters().cwnd_updates, 1u);
+}
+
+// Events during a call still update signals; the calls they ask for are
+// combined into one, which starts when the busy call finishes and reads the
+// signals as they are then.
+TEST_F(PcmTimerTest, AsyncCombinesRequestsWhileBusy) {
+    PcmCcc ccc(algo(), 0);
+    FakeClock clock;
+    ccc.setHandlerTime(2 * kUnit);
+    ccc.setScheduler(clock.scheduler(), 0);
+    std::vector<int64_t> acks_seen;
+    std::vector<int64_t> time_seen;
+    timed::body = [&] {
+        acks_seen.push_back(uet_signal_get(T_ACK));
+        time_seen.push_back(uet_signal_get(T_TIME));
+    };
+
+    ccc.onEvent(ack(), 1 * kUnit);            // call 1 starts; busy until 3
+    ccc.onEvent(ack(), 1 * kUnit + kUnit / 2);
+    ccc.onEvent(ack(), 2 * kUnit);
+    EXPECT_EQ(ccc.counters().invocations, 1u);
+    EXPECT_EQ(ccc.counters().requests_while_busy, 2u);
+    EXPECT_EQ(ccc.signals().get(2), 3);       // all three ACKs counted
+
+    clock.runUntil(ccc, 6 * kUnit);           // call 1 ends at 3, call 2 runs 3..5
+    EXPECT_EQ(ccc.counters().invocations, 2u);
+    EXPECT_EQ(acks_seen, (std::vector<int64_t>{1, 3}));
+    EXPECT_EQ(time_seen, (std::vector<int64_t>{1, 3}));
+    EXPECT_FALSE(ccc.busy());
+}
+
+// A deadline reached while busy is served by the call after.
+TEST_F(PcmTimerTest, AsyncDeadlineWhileBusy) {
+    PcmCcc ccc(algo(), 0);
+    FakeClock clock;
+    ccc.setHandlerTime(6 * kUnit);
+    ccc.setScheduler(clock.scheduler(), 0);
+    std::vector<uet_trigmask_t> masks;
+    timed::body = [&] {
+        uet_trigmask_t m;
+        uet_trigger_mask(&m);
+        masks.push_back(m);
+    };
+
+    ccc.onEvent(ack(), 1 * kUnit);   // call 1, busy until 7
+    ccc.onEvent(nack(), 2 * kUnit);  // deadline at 6, while busy
+    clock.runUntil(ccc, 9 * kUnit);
+    ASSERT_EQ(masks.size(), 2u);
+    EXPECT_EQ(masks[1], PcmSignalState::bit(3));  // T_NACK, delivered by call 2 at 7
+    EXPECT_EQ(ccc.counters().deadline_invocations, 0u);
+}
+
+TEST_F(PcmTimerTest, AsyncFatalChangesNothing) {
+    PcmCcc ccc(algo(), 0);
+    FakeClock clock;
+    ccc.setHandlerTime(2 * kUnit);
+    ccc.setScheduler(clock.scheduler(), 0);
+    timed::body = [] {
+        uet_set_cwnd(5000);
+        uet_ccc_fatal(3);
+    };
+    ccc.onEvent(ack(), 1 * kUnit);
+    EXPECT_TRUE(ccc.inError());
+    EXPECT_FALSE(ccc.busy());
+    clock.runUntil(ccc, 10 * kUnit);
+    EXPECT_EQ(ccc.cwnd().value(), 1000u);
+}

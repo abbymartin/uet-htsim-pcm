@@ -47,6 +47,7 @@ UecSrc::Sender_CC UecSrc::_sender_cc_algo = UecSrc::NSCC;
 std::shared_ptr<const PcmAlgorithm> UecSrc::_pcm_algorithm;
 std::map<std::string, std::shared_ptr<const PcmAlgorithm>> UecSrc::_pcm_group_algorithms;
 PcmUnits UecSrc::_pcm_units = PcmUnits::SPEC;
+simtime_picosec UecSrc::_pcm_handler_time = 0;
 
 // ---------------------------------------------------------------------------
 // PCM support (docs/pcm-plan.md)
@@ -125,6 +126,7 @@ public:
         if (!_ccc) {
             _eventlist = &src.eventlist();
             _ccc = new PcmCcc(_algo, _eventlist->now(), _name, UecSrc::_pcm_units);
+            _ccc->setHandlerTime(UecSrc::_pcm_handler_time);
             _cwnd = (_ccc->cwnd() && *_ccc->cwnd() != 0) ? mem_b(*_ccc->cwnd()) : src._cwnd;
             _timer = new UecPcmTimer(*_eventlist, [this] { onTimer(); });
             pcmConnectTimer(*_ccc, _timer, _eventlist->now());
@@ -223,6 +225,7 @@ std::string pcmFlowStats(const PcmCcc* c, const UecPcmGroup* group) {
            " pcm_deadline_calls " + std::to_string(k.deadline_invocations) +
            " pcm_timer_events " + std::to_string(k.timer_events) +
            " pcm_cwnd_updates " + std::to_string(k.cwnd_updates) +
+           " pcm_requests_while_busy " + std::to_string(k.requests_while_busy) +
            " pcm_error " + (c->inError() ? "1" : "0");
 }
 
@@ -255,6 +258,7 @@ void UecSrc::pcmStart() {
     }
     assert(_pcm_algorithm);
     _pcm = new PcmCcc(_pcm_algorithm, eventlist().now(), _name, _pcm_units);
+    _pcm->setHandlerTime(_pcm_handler_time);
     // A uet_tx_cwnd control with initial_value 0 keeps the window the simulator
     // set up for the flow (initNscc), since 0 is never a valid window. See
     // docs/pcm-plan.md §7.

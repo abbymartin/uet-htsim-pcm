@@ -251,16 +251,21 @@ PCM_HANDLER(dctcp) {
   signal values, records which triggers fired, and calls the handler once for all
   of them. It then applies the controls the handler set (`uet_set_cwnd` →
   `UecSrc::_cwnd`) and restarts the CONTINUOUS triggers' counting.
-- **Execution modes**, chosen on the command line: `-pcm_exec sync` (the default)
-  or `-pcm_exec async -pcm_handler_time_ns Th`.
-  - Synchronous: the handler runs inside the ACK/NACK processing, and its new
-    window applies before the next send decision. This is what the exact-match
-    test uses.
-  - Asynchronous: each call takes `Th`, and its controls apply when it finishes.
-    Events arriving meanwhile still update the accumulators. Triggers that fire
-    meanwhile are combined into the next call, since only one call per CCC can run
-    at a time (§3.6.18.9).
-  - The paper's `T = N·Th` experiment becomes a sweep over `-pcm_handler_time_ns`.
+- **Execution modes**, set by `-pcm_handler_time_ns T` (default 0).
+  - Synchronous (T = 0): the handler runs inside the ACK/NACK processing, and its
+    new window applies before the next send decision. This is what the
+    exact-match test uses.
+  - Asynchronous (T > 0): a call runs the handler on the signal values when it
+    starts, and its changes (window, signal writes) take effect T later. Until
+    then the CCC is busy. Events arriving meanwhile still update the
+    accumulators, and calls they ask for are combined into one, which starts as
+    soon as the busy call finishes, since only one call per CCC can run at a time
+    (§3.6.18.9). `pcm_requests_while_busy` counts the combined requests.
+  - The paper's `T = N·Th` experiment (§7.3) becomes a sweep over
+    `-pcm_handler_time_ns`. A first sweep with PCM `dctcp` on the 16-to-1
+    incast, for T = 0, 0.1, 1.1, 10, 36.4 and 145.5 µs: retransmissions grow from
+    1,283 to 56,115 and the slowest flow from 2480 to 2733 µs, while handler
+    calls drop from 6,677 to 271.
 - **No skipped events.** The spec *allows* an implementation to skip RX/TX events
   under load but doesn't require it, so never skipping is within the spec. All
   events go through one function, so a drop model can be added there later.
@@ -497,11 +502,15 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
    share one with other ungrouped flows on the same NIC pair. Keeping them
    separate preserves today's behaviour and the exact-match test.
 
-9. **Asynchronous mode uses a fixed handler time `Th`.** The spec leaves call
+9. **Asynchronous mode uses a fixed handler time `T`.** The spec leaves call
    timing to the implementation, but says programs may assume they are called
    immediately (§3.6.18.2). Asynchronous mode deliberately breaks that assumption
    to study reaction delay, as in the paper (§5.3, §7.3). Synchronous mode keeps
-   it.
+   it. In asynchronous mode, a handler's signal writes (`uet_signal_set` /
+   `uet_signal_update`) take effect when the call finishes, like its window
+   (item 21). A `uet_signal_set` then replaces any updates that arrived while the
+   call was busy. A handler that needs "since the last call" values in this mode
+   should keep the previous value in a variable instead of resetting the signal.
 
 10. **`accumulator` is required on every signal.** The spec's YAML format marks
     it as optional, with a default "see Table YYY". But the tables it points to
@@ -720,8 +729,9 @@ adds its §7 entry and code comment in the same commit.
    bytes-in-flight, taking turns between flows, group totals for signals; unit
    tests, tests that two grouped flows share one window fairly, and
    `commit_check.sh`.
-10. [ ] **pcm: asynchronous mode.** `-pcm_exec async -pcm_handler_time_ns`; tests
-    that triggers arriving during a call are combined.
+10. [x] **pcm: asynchronous mode.** `-pcm_handler_time_ns T` (T > 0 means
+    asynchronous; one option instead of the planned `-pcm_exec async` plus a
+    time); tests that requests arriving during a call are combined.
 11. [ ] **datacenter: `validate_pcm.txt` and its baseline**, added to `commit_check.sh`
 
 **Later (design only now)**

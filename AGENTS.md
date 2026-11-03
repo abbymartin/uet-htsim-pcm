@@ -61,7 +61,8 @@ cd datacenter
   algorithms send exactly like the originals) and `datacenter/pcm_groups_check.sh`
   (flow groups share one window). Both are part of `ctest`; a few seconds each.
 - **PCM options:** `-pcm FILE`, `-pcm_ccc GROUP=FILE`, `-pcm_param NAME=VALUE` or
-  `GROUP:NAME=VALUE` (both repeatable), and `-pcm_units spec|native`. Flows are
+  `GROUP:NAME=VALUE` (both repeatable), `-pcm_units spec|native`, and
+  `-pcm_handler_time_ns T` (each handler call takes T; 0 = immediate). Flows are
   put in a group with `ccc GROUP` on their connection-matrix line. See
   `./htsim_uec -help` and `docs/pcm-plan.md` §4.5.
 - **Runs stop at `-end`, 1000 µs by default.** Flows still running then have no
