@@ -118,6 +118,11 @@ PcmSpec pcmParseSpec(const std::string& yaml_text, const std::string& source_nam
 // Read and parse a YAML file. Throws PcmSpecError.
 PcmSpec pcmLoadSpecFile(const std::string& path);
 
+// Change a parameter's value, given as "MACRO=VALUE" (the -pcm_param option).
+// The value is read with the parameter's dtype, like a value in the file.
+// Throws PcmSpecError if there is no such parameter or the value is invalid.
+void pcmOverrideParameter(PcmSpec& spec, const std::string& assignment);
+
 const char* pcmAccOpName(PcmAccOp op);
 const char* pcmTriggerOpName(PcmTriggerOp op);
 

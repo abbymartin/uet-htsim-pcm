@@ -560,6 +560,35 @@ signal:
     EXPECT_THAT(errorOf("cc_algorithm: [unclosed\n"), HasSubstr("YAML syntax error"));
 }
 
+// -pcm_param MACRO=VALUE
+TEST(PcmSpecTest, OverrideParameter) {
+    PcmSpec s = pcmParseSpec(validFile() + R"(
+  - {macro: P_N, dtype: uint, value: 10}
+  - {macro: P_I, dtype: int, value: -1}
+)", "test.yaml");
+    pcmOverrideParameter(s, "P_G=0.125");
+    pcmOverrideParameter(s, "P_N=0x20");
+    pcmOverrideParameter(s, "P_I=-7");
+    EXPECT_DOUBLE_EQ(std::get<double>(s.parameters[0].value), 0.125);
+    EXPECT_EQ(std::get<uint64_t>(s.parameters[1].value), 32u);
+    EXPECT_EQ(std::get<int64_t>(s.parameters[2].value), -7);
+
+    auto err = [&](const std::string& a) {
+        try {
+            pcmOverrideParameter(s, a);
+        } catch (const PcmSpecError& e) {
+            return std::string(e.what());
+        }
+        return std::string();
+    };
+    EXPECT_THAT(err("P_G"), HasSubstr("expected MACRO=VALUE"));
+    EXPECT_THAT(err("=1"), HasSubstr("expected MACRO=VALUE"));
+    EXPECT_THAT(err("P_G="), HasSubstr("expected MACRO=VALUE"));
+    EXPECT_THAT(err("P_NOPE=1"), HasSubstr("no parameter P_NOPE (parameters: P_G, P_N, P_I)"));
+    EXPECT_THAT(err("P_N=-1"), HasSubstr("unsigned integer"));
+    EXPECT_THAT(err("P_G=fast"), HasSubstr("must be a number"));
+}
+
 TEST(PcmSpecTest, LoadsFile) {
     const std::string path = ::testing::TempDir() + "pcm_spec_test.yaml";
     {

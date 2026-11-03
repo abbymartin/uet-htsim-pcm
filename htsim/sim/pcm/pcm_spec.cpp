@@ -593,6 +593,28 @@ PcmSpec pcmParseSpec(const std::string& yaml_text, const std::string& source_nam
     return spec;
 }
 
+void pcmOverrideParameter(PcmSpec& spec, const std::string& assignment) {
+    const std::string where = "-pcm_param " + assignment;
+    auto eq = assignment.find('=');
+    if (eq == std::string::npos || eq == 0 || eq + 1 == assignment.size())
+        throw PcmSpecError(where + ": expected MACRO=VALUE");
+    const std::string macro = assignment.substr(0, eq);
+    const std::string value = assignment.substr(eq + 1);
+
+    for (auto& par : spec.parameters) {
+        if (par.macro != macro)
+            continue;
+        Parser p(where);
+        par.value = parseValue(p, YAML::Node(value), par.dtype, "parameter " + macro);
+        return;
+    }
+    std::string list;
+    for (const auto& par : spec.parameters)
+        list += (list.empty() ? "" : ", ") + par.macro;
+    throw PcmSpecError(where + ": " + spec.source + " has no parameter " + macro +
+                       " (parameters: " + (list.empty() ? "none" : list) + ")");
+}
+
 PcmSpec pcmLoadSpecFile(const std::string& path) {
     std::ifstream in(path);
     if (!in)

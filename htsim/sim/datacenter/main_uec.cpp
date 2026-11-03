@@ -23,6 +23,7 @@
 #include "connection_matrix.h"
 #include "pciemodel.h"
 #include "oversubscribed_cc.h"
+#include "pcm_runtime.h"
 
 
 #include "fat_tree_topology.h"
@@ -62,6 +63,7 @@ static const char * help =
 "\t[-hop_latency NUM] [-switch_latency NUM]\n"
 "\t[-ar_sticky_delta NUM] [-ar_granularity STR]\n"
 "\t[-ar_method STR] [-strat STR]\n"
+"\t[-pcm FNAME] [-pcm_param STR] [-pcm_units STR]\n"
 "\n"
 "Notes:\n"
 " FNAME: File name\n"
@@ -97,8 +99,14 @@ static const char * help =
 "                        Set queue size bandwidth-delay product factor.\n"
 "                        Default: Derived from network parameters.\n"
 "  -sender_cc_algo STR   Sender based Congestions Control algorithm.\n"
-"                        Choices: dctcp, nscc, constant.\n"
+"                        Choices: dctcp, nscc, constant, pcm.\n"
 "                        Default: nscc\n"
+"  -pcm FNAME            Use the PCM algorithm described by this YAML file\n"
+"                        (implies -sender_cc_algo pcm). See docs/pcm-plan.md.\n"
+"  -pcm_param STR        Override a parameter of the PCM algorithm, as\n"
+"                        NAME=VALUE. May be repeated.\n"
+"  -pcm_units STR        Units of the signal values PCM handlers see.\n"
+"                        Choices: spec, native. Default: spec\n"
 "  -sender_cc            Enable Sender based Congestion Control.\n"
 "                        Default: True.\n"
 "  -receiver_cc          Enable Receiver based Congestion Control.\n"
@@ -247,6 +255,9 @@ int main(int argc, char **argv) {
     
     int seed = 13;
     int i = 1;
+    std::string pcm_file;                 // -pcm
+    std::vector<std::string> pcm_params;  // -pcm_param
+    bool pcm_units_set = false;           // -pcm_units
     double pcie_rate = 1.1;
 
     filename << "logout.dat";
@@ -330,8 +341,10 @@ int main(int argc, char **argv) {
                 UecSrc::_sender_cc_algo = UecSrc::DCTCP;
             else if (!strcmp(argv[i+1],"nscc")) 
                 UecSrc::_sender_cc_algo = UecSrc::NSCC;
-            else if (!strcmp(argv[i+1],"constant")) 
+            else if (!strcmp(argv[i+1],"constant"))
                 UecSrc::_sender_cc_algo = UecSrc::CONSTANT;
+            else if (!strcmp(argv[i+1],"pcm"))
+                UecSrc::_sender_cc_algo = UecSrc::PCM;  // needs -pcm FNAME
             else {
                 cout << "UNKNOWN CC ALGO " << argv[i+1] << endl;
                 exit(1);
@@ -639,6 +652,26 @@ int main(int argc, char **argv) {
                 FatTreeSwitch::set_strategy(FatTreeSwitch::RR);
             }
             i++;
+        } else if (!strcmp(argv[i],"-pcm")) {
+            UecSrc::_sender_based_cc = true;
+            sender_driven = true;
+            UecSrc::_sender_cc_algo = UecSrc::PCM;
+            pcm_file = argv[i+1];
+            i++;
+        } else if (!strcmp(argv[i],"-pcm_param")) {
+            pcm_params.push_back(argv[i+1]);
+            i++;
+        } else if (!strcmp(argv[i],"-pcm_units")) {
+            if (!strcmp(argv[i+1],"spec"))
+                UecSrc::_pcm_units = PcmUnits::SPEC;
+            else if (!strcmp(argv[i+1],"native"))
+                UecSrc::_pcm_units = PcmUnits::NATIVE;
+            else {
+                cout << "Expecting -pcm_units spec|native, found " << argv[i+1] << endl;
+                exit(1);
+            }
+            pcm_units_set = true;
+            i++;
         } else if (!strcmp(argv[i],"-help")) {
             exit_error(argv[0]);
         } else {
@@ -660,6 +693,37 @@ int main(int argc, char **argv) {
     srand(seed);
     srandom(seed);
     cout << "Parsed args\n";
+
+    if (UecSrc::_sender_cc_algo == UecSrc::PCM) {
+        if (pcm_file.empty()) {
+            cout << "-sender_cc_algo pcm needs a PCM algorithm file: -pcm FNAME" << endl;
+            exit(1);
+        }
+        try {
+            PcmSpec spec = pcmLoadSpecFile(pcm_file);
+            for (const auto& p : pcm_params)
+                pcmOverrideParameter(spec, p);
+            auto algo = std::make_shared<const PcmAlgorithm>(std::move(spec));
+            cout << "PCM: algorithm " << algo->info().name() << " from " << pcm_file
+                 << ", units " << (UecSrc::_pcm_units == PcmUnits::SPEC ? "spec" : "native")
+                 << endl;
+            for (const auto& p : pcm_params)
+                cout << "PCM: parameter " << p << endl;
+            for (const auto& e : algo->spec().extensions_used)
+                cout << "PCM: uses non-spec feature: " << e << endl;
+            for (const auto& w : algo->spec().warnings)
+                cout << "PCM: warning: " << w << endl;
+            for (const auto& w : algo->warnings())
+                cout << "PCM: warning: " << w << endl;
+            UecSrc::_pcm_algorithm = algo;
+        } catch (const PcmSpecError& e) {
+            cout << "PCM: " << e.what() << endl;
+            exit(1);
+        }
+    } else if (!pcm_file.empty() || !pcm_params.empty() || pcm_units_set) {
+        cout << "-pcm, -pcm_param and -pcm_units need -sender_cc_algo pcm" << endl;
+        exit(1);
+    }
     Packet::set_packet_size(packet_size);
 
 
@@ -1167,6 +1231,26 @@ int main(int argc, char **argv) {
         sleek_pkts += s._sleek_counter;
     }
     cout << "New: " << new_pkts << " Rtx: " << rtx_pkts << " RTS: " << rts_pkts << " Bounced: " << bounce_pkts << " ACKs: " << ack_pkts << " NACKs: " << nack_pkts << " Pulls: " << pull_pkts << " sleek_pkts: " << sleek_pkts << endl;
+
+    if (UecSrc::_pcm_algorithm) {
+        uint64_t ccc_count = 0, events = 0, calls = 0, deadline_calls = 0, timer_events = 0,
+                 cwnd_updates = 0, errors = 0;
+        for (UecSrc* src : uec_srcs) {
+            const PcmCcc* c = src->pcm();
+            if (!c)
+                continue;  // flow never started
+            ccc_count++;
+            events += c->signals().counters().events;
+            calls += c->counters().invocations;
+            deadline_calls += c->counters().deadline_invocations;
+            timer_events += c->counters().timer_events;
+            cwnd_updates += c->counters().cwnd_updates;
+            errors += c->inError() ? 1 : 0;
+        }
+        cout << "PCM: CCCs: " << ccc_count << " Events: " << events << " Calls: " << calls
+             << " DeadlineCalls: " << deadline_calls << " TimerEvents: " << timer_events
+             << " CwndUpdates: " << cwnd_updates << " Errors: " << errors << endl;
+    }
     /*
     list <const Route*>::iterator rt_i;
     int counts[10]; int hop;

@@ -1,0 +1,20 @@
+# A fixed window: the PCM version of -sender_cc_algo constant (see constant.cpp).
+cc_algorithm:
+  name: constant
+  description: "Fixed window; the handler runs on every ACK but changes nothing"
+
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger:
+      op: wc
+      mode_refval: 1 0
+      arm_mode: continuous
+      action: invoke
+      invoke_deadline: 0
+
+control:
+  # initial_value 0 keeps the window the simulator sets up for the flow.
+  - name: uet_tx_cwnd
+    initial_value: 0

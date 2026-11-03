@@ -140,11 +140,12 @@ set(SOURCE_FILES
 
 # Create static library
 add_library(htsim STATIC ${SOURCE_FILES})
+target_link_libraries(htsim PUBLIC htsim_pcm)  # PCM, defined in pcm/
 target_include_directories(htsim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}) # Needed for header-only libraries (e.g., loggertypes.h).
 
-# Add subdirectories
-add_subdirectory(datacenter)
+# Add subdirectories. pcm comes first: datacenter links its algorithm handlers.
 add_subdirectory(pcm)
+add_subdirectory(datacenter)
 
 # Define executables and link with htsim library
 add_executable(parse_output parse_output.cpp)

@@ -63,3 +63,7 @@ foreach(EXECUTABLE ${ALL_EXECUTABLES})
     add_symlink_target(${EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 
+# The PCM algorithm handlers (pcm/algorithms), linked as object files so that
+# their self-registration is kept.
+target_link_libraries(htsim_uec PRIVATE htsim_pcm_algorithms)
+

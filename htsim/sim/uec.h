@@ -28,6 +28,12 @@ class UecSink;
 class UecSrc;
 class UecLogger;
 
+// Programmable Congestion Management (pcm/, docs/pcm-plan.md).
+class PcmAlgorithm;
+class PcmCcc;
+struct PcmSignalUpdate;
+enum class PcmUnits;
+
 
 // UecNIC aggregates UecSrcs that are on the same NIC.  It round
 // robins between active srcs when we're limited by the sending
@@ -212,8 +218,20 @@ public:
     static bool _sender_based_cc;
     static bool _receiver_based_cc;
 
-    enum Sender_CC { DCTCP, NSCC, CONSTANT};
+    // PCM: the window is set by a PCM algorithm (docs/pcm-plan.md).
+    enum Sender_CC { DCTCP, NSCC, CONSTANT, PCM};
     static Sender_CC _sender_cc_algo;
+
+    // The PCM algorithm and units used by PCM flows. Set from the command line.
+    static std::shared_ptr<const PcmAlgorithm> _pcm_algorithm;
+    static PcmUnits _pcm_units;
+
+    // This flow's CCC, created when the flow starts; nullptr for non-PCM flows
+    // and before the flow starts.
+    const PcmCcc* pcm() const { return _pcm; }
+
+    // Called by the PCM timer when the CCC asked for a timer event.
+    void pcmTimer();
 
     static bool _disable_quick_adapt;
     static uint8_t _qa_gate;
@@ -308,6 +326,14 @@ public:
 
     void dontUpdateCwndOnAck(bool skip, simtime_picosec delay, mem_b newly_acked_bytes);
     void dontUpdateCwndOnNack(bool skip, mem_b nacked_bytes, bool last_hop);
+
+    // PCM: create the CCC when the flow starts, and pass it one event's signal
+    // updates (values in the simulator's units). pcmEvent adds the window,
+    // bytes in flight and backlog, and applies any window the handler sets.
+    void pcmStart();
+    void pcmEvent(std::vector<PcmSignalUpdate>& updates);
+    PcmCcc* _pcm = nullptr;
+    EventSource* _pcm_timer = nullptr;
 
     void (UecSrc::*updateCwndOnAck)(bool skip, simtime_picosec delay, mem_b newly_acked_bytes);
     void (UecSrc::*updateCwndOnNack)(bool skip, mem_b nacked_bytes, bool last_hop);

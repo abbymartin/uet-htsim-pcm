@@ -13,6 +13,14 @@ add_library(htsim_pcm STATIC
 target_include_directories(htsim_pcm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(htsim_pcm PRIVATE yaml-cpp::yaml-cpp)
 
+# The algorithm handlers. They register themselves at program start and nothing
+# calls them directly, so they are built as an object library: from a static
+# library the linker would drop them.
+add_library(htsim_pcm_algorithms OBJECT
+    algorithms/constant.cpp
+)
+target_link_libraries(htsim_pcm_algorithms PUBLIC htsim_pcm)
+
 if ( ENABLE_TESTS )
     set(PCM_UNIT_TESTS
         pcm_accumulator_test

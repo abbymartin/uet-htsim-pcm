@@ -121,10 +121,10 @@ From the paper:
 | `uet_rx_ack_ecn` | `pkt.ecn_echo()` | ✅ |
 | `uet_rx_ack_rtt` | `raw_rtt` (only when the send record is valid) | ✅ |
 | `uet_rx_ack_probe` | `pkt.is_probe_ack()` | ✅ |
-| `uet_rx_nack`, `_nack_ecn`, `_nack_rtt`, `_nack_trim`, `_nack_last_hop_trim` | `processNack` | ✅ |
+| `uet_rx_nack`, `_nack_ecn`, `_nack_rtt`, `_nack_trim`, `_nack_last_hop_trim` | `processNack`; the sink only sends NACKs for trimmed packets, so `_nack_trim` is always 1 | ✅ |
 | `uet_tx_req`, `uet_tx_req_bytes` | `sendNewPacket` / `sendRtxPacket` | ✅ |
 | `uet_tx_rto` | `rtxTimerExpired` | ✅ |
-| `uet_tx_cwnd`, `uet_tx_inflight_bytes`, `uet_tx_backlog_bytes` | `_cwnd`, `_in_flight`, `_backlog` | ✅ |
+| `uet_tx_cwnd`, `uet_tx_inflight_bytes`, `uet_tx_backlog_bytes` | `_cwnd`, `_in_flight`, `_backlog + _rtx_backlog`; reported with every event (§7 item 25) | ✅ |
 | `uet_time_current`, `uet_time_last_update` | simulator clock | ✅ |
 | `uet_rx_ack_svc` | `UecAckPacket::_residency_time`, which is **never set** today | ❌ (later) |
 | `uet_tx_send_rate` | needs rate limiting in the sender | ❌ (with DCQCN/TIMELY) |
@@ -172,6 +172,7 @@ htsim/sim/pcm/
                       uses; the objects behind PCM_SIGNAL / PCM_VARIABLE /
                       PCM_PARAMETER_*
   algorithms/
+    constant.{yaml,cpp}       fixed window, like -sender_cc_algo constant; the smallest example
     dctcp_legacy.{yaml,cpp}   exact port of the existing DCTCP (for the exact-match test)
     dctcp.{yaml,cpp}          textbook DCTCP
   tests/pcm_*_test.cpp        googletest unit tests
@@ -228,8 +229,9 @@ PCM_HANDLER(dctcp) {
   values from different YAML files, or with `-pcm_param NAME=VALUE`.
 - **Linking.** Because handlers register themselves at program start, their object
   files must be linked into the simulator even though nothing calls them
-  directly. A static library would drop them, so the algorithm files will be
-  built as an object library (commit 8).
+  directly. A static library would drop them, so the algorithm files
+  (`pcm/algorithms/*.cpp`) are built as an object library,
+  `htsim_pcm_algorithms`, linked into `htsim_uec`.
 
 ### 4.3 YAML
 
@@ -320,14 +322,32 @@ In htsim, each `UecSrc` is one PDC.
 
 ### 4.6 Changes to `UecSrc`
 
-- Add `PCM` to `Sender_CC`, and `-sender_cc_algo pcm` (implied by `-pcm FILE`).
-- At each point in the §3 table, collect that packet's signal values and pass them
-  to the flow's CCC. NSCC's functions stay untouched.
-- All new code runs only when `_sender_cc_algo == PCM`, so non-PCM runs execute
-  the same code as before.
-- `initNscc()` still runs for PCM flows, to set the base RTT, BDP and max window.
-  The initial window comes from the YAML (`control.initial_value`). The paper's
+- **Command line.** `PCM` is added to `Sender_CC`. `-pcm FILE` loads an algorithm
+  and implies `-sender_cc_algo pcm`. `-pcm_param NAME=VALUE` (repeatable) changes
+  a parameter, and `-pcm_units spec|native` chooses the units. The loaded
+  algorithm, any non-spec features it uses, and warnings are printed at start.
+- **The CCC is created when the flow starts** (`startConnection`), so its timers
+  count from the flow's start. `initNscc()` still runs for PCM flows, to set the
+  base RTT, BDP and window. A `uet_tx_cwnd` control with a non-zero
+  `initial_value` replaces that window; 0 keeps it (§7 item 26). The paper's
   incast study (Fig. 2a) shows why the initial window matters.
+- **Events.** At each point in the §3 table, the sender collects that packet's
+  signal values, in the simulator's units, and passes them to the flow's CCC:
+  ACKs and NACKs where the existing algorithms' window update is called, sent
+  packets at the end of `sendNewPacket` / `sendRtxPacket`, and retransmit
+  timeouts in `rtxTimerExpired`. Values are converted to the CCC's units, and
+  the window, bytes in flight and backlog are added to every event (§7 item
+  25). If the handler set a window, it becomes `UecSrc::_cwnd`.
+- **Timers.** Each PCM flow has a small event source that delivers the CCC's
+  timer requests. It isn't traffic, so PCM timers can't keep a finished
+  simulation running. After a timer event that changed the window, the sender
+  tries to send.
+- **ERROR state.** A CCC in the ERROR state admits no new packets (§7 item 27).
+- **Output.** Each PCM flow's finish line adds `pcm_events`, `pcm_calls`,
+  `pcm_deadline_calls`, `pcm_timer_events`, `pcm_cwnd_updates` and `pcm_error`.
+  A `PCM:` summary line with the totals follows the end-of-run packet counts.
+- **Non-PCM runs are unchanged.** All new code runs only for PCM flows: non-PCM
+  flows have no CCC, and their output has no PCM fields. `commit_check.sh` passes.
 
 ## 5. DCTCP for verification
 
@@ -583,6 +603,31 @@ unknown or repeated keys are errors, and a file whose handler can never be calle
     coalescing setting. An immediate (deadline 0) trigger before then delivers
     the deferred one with it, earlier.
 
+25. **The window, bytes in flight and backlog come with every event.**
+    `uet_tx_cwnd`, `uet_tx_inflight_bytes` and `uet_tx_backlog_bytes` are
+    `uet_tx_*` signals, which the spec updates when a packet is sent
+    (§3.6.18.5.3). A handler called for an ACK would then see values from the
+    last send, before the ACK freed up the window. The sender reports their
+    current values with every event (ACK, NACK, send, timeout), so handlers
+    always read them as they are now. As with any update, triggers on them are
+    checked at those events (item 2).
+
+26. **`initial_value: 0` keeps the simulator's window.** A `uet_tx_cwnd` control's
+    `initial_value` is the window "at (re)start of algorithm" (§3.6.18.8.5).
+    htsim already gives each flow a starting window from the network's
+    bandwidth-delay product (`initNscc`, or `-cwnd`). Since 0 is never a valid
+    window (item 22), we use `initial_value: 0` to mean "keep that window". Any
+    other value replaces it.
+
+27. **The ERROR state only stops new packets.** The spec says a CCC in the ERROR
+    state admits no new packets, its in-flight and queued packets are "logically
+    dropped", and its PDCs also go into an error state (§3.6.18.7.2.1). Here the
+    flow stops sending, including retransmissions, but packets already in the
+    network still arrive and are acknowledged, and nothing else about the flow
+    changes. Unless all its data was already sent, the flow then never
+    finishes; the error shows as the message printed when it happened, and as
+    `Errors` in the `PCM:` summary line.
+
 ## 8. Commit plan
 
 Each commit builds, passes `ctest`, and leaves non-PCM behaviour unchanged.
@@ -611,11 +656,14 @@ adds its §7 entry and code comment in the same commit.
 6. [x] **pcm: time triggers and `invoke_deadline`.** The CCC asks for timer
    events through a scheduling callback; time signals and units; unit tests
    with a fake clock.
-7. [ ] **uec: connect PCM to the sender.** `PCM` enum; ACK/NACK/send/timeout calls
+7. [x] **uec: connect PCM to the sender.** `PCM` enum; ACK/NACK/send/timeout calls
    into per-flow CCCs; the CCC's timer requests on htsim's event list; options
    `-pcm`, `-pcm_param`, `-pcm_units`; counters on the flow finish line and in
-   the summary; `commit_check.sh`.
-8. [ ] **pcm: `dctcp_legacy` and the exact-match test**, as ctest or a script.
+   the summary; `commit_check.sh`. Also the `htsim_pcm_algorithms` object
+   library and a first algorithm, `constant` (fixed window), whose output on
+   `one.cm` and `incast.cm` is identical to `-sender_cc_algo constant`.
+8. [ ] **pcm: `dctcp_legacy` and the exact-match test**, as ctest or a script,
+   covering `constant` too.
 9. [ ] **pcm: `dctcp`.** Textbook DCTCP, a unit test of α, and incast/permutation
    sanity runs.
 10. [ ] **datacenter: flow groups.** `ccc <group>` in the connection matrix,

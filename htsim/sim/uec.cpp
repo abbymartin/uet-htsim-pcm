@@ -5,6 +5,7 @@
 #include "circular_buffer.h"
 #include "uec_logger.h"
 #include "pciemodel.h"
+#include "pcm_runtime.h"
 
 using namespace std;
 
@@ -42,6 +43,116 @@ bool UecSrc::_receiver_based_cc = false;
 bool UecSink::_oversubscribed_cc = false; // can only be enabled when receiver_based_cc is set to true
 
 UecSrc::Sender_CC UecSrc::_sender_cc_algo = UecSrc::NSCC;
+std::shared_ptr<const PcmAlgorithm> UecSrc::_pcm_algorithm;
+PcmUnits UecSrc::_pcm_units = PcmUnits::SPEC;
+
+// ---------------------------------------------------------------------------
+// PCM support (docs/pcm-plan.md)
+
+namespace {
+
+// Delivers the timer events a flow's CCC asks for. Not traffic: these events
+// don't keep the simulation running on their own, so a periodic PCM timer
+// can't keep a finished simulation going.
+class UecPcmTimer : public EventSource {
+public:
+    UecPcmTimer(EventList& eventlist, UecSrc& src) : EventSource(eventlist, "uecPcmTimer"), _src(src) {}
+    void doNextEvent() override { _src.pcmTimer(); }
+    bool isTraffic() override { return false; }
+
+private:
+    UecSrc& _src;
+};
+
+// The signals the sender reports, looked up once.
+struct PcmSenderSignals {
+    const PcmSignalInfo* rx_ack = pcmFindSignal("uet_rx_ack");
+    const PcmSignalInfo* rx_ack_bytes = pcmFindSignal("uet_rx_ack_bytes");
+    const PcmSignalInfo* rx_ack_count = pcmFindSignal("uet_rx_ack_count");
+    const PcmSignalInfo* rx_ack_ecn = pcmFindSignal("uet_rx_ack_ecn");
+    const PcmSignalInfo* rx_ack_rtt = pcmFindSignal("uet_rx_ack_rtt");
+    const PcmSignalInfo* rx_ack_probe = pcmFindSignal("uet_rx_ack_probe");
+    const PcmSignalInfo* rx_nack = pcmFindSignal("uet_rx_nack");
+    const PcmSignalInfo* rx_nack_ecn = pcmFindSignal("uet_rx_nack_ecn");
+    const PcmSignalInfo* rx_nack_rtt = pcmFindSignal("uet_rx_nack_rtt");
+    const PcmSignalInfo* rx_nack_trim = pcmFindSignal("uet_rx_nack_trim");
+    const PcmSignalInfo* rx_nack_last_hop_trim = pcmFindSignal("uet_rx_nack_last_hop_trim");
+    const PcmSignalInfo* rx_nack_bytes = pcmFindSignal("uet_rx_nack_vend_htsim_bytes");
+    const PcmSignalInfo* tx_req = pcmFindSignal("uet_tx_req");
+    const PcmSignalInfo* tx_req_bytes = pcmFindSignal("uet_tx_req_bytes");
+    const PcmSignalInfo* tx_rto = pcmFindSignal("uet_tx_rto");
+    const PcmSignalInfo* tx_cwnd = pcmFindSignal("uet_tx_cwnd");
+    const PcmSignalInfo* tx_inflight_bytes = pcmFindSignal("uet_tx_inflight_bytes");
+    const PcmSignalInfo* tx_backlog_bytes = pcmFindSignal("uet_tx_backlog_bytes");
+};
+
+const PcmSenderSignals& pcmSig() {
+    static const PcmSenderSignals s;
+    return s;
+}
+
+// A signal update with the value in the simulator's units (picoseconds,
+// bytes); pcmEvent() converts it to the CCC's units.
+PcmSignalUpdate pcmUpdate(const PcmSignalInfo* signal, int64_t value) {
+    return PcmSignalUpdate{signal, value};
+}
+
+// PCM counters for a flow's finish line; empty for non-PCM flows, so their
+// output is unchanged.
+std::string pcmFlowStats(const PcmCcc* c) {
+    if (!c)
+        return "";
+    const auto& k = c->counters();
+    const auto& s = c->signals().counters();
+    return " pcm_events " + std::to_string(s.events) +
+           " pcm_calls " + std::to_string(k.invocations) +
+           " pcm_deadline_calls " + std::to_string(k.deadline_invocations) +
+           " pcm_timer_events " + std::to_string(k.timer_events) +
+           " pcm_cwnd_updates " + std::to_string(k.cwnd_updates) +
+           " pcm_error " + (c->inError() ? "1" : "0");
+}
+
+}  // namespace
+
+void UecSrc::pcmStart() {
+    assert(_pcm_algorithm);
+    _pcm = new PcmCcc(_pcm_algorithm, eventlist().now(), _name, _pcm_units);
+    // A uet_tx_cwnd control with initial_value 0 keeps the window the simulator
+    // set up for the flow (initNscc), since 0 is never a valid window. See
+    // docs/pcm-plan.md §7.
+    if (_pcm->cwnd() && *_pcm->cwnd() != 0)
+        _cwnd = mem_b(*_pcm->cwnd());
+    _pcm_timer = new UecPcmTimer(eventlist(), *this);
+    EventSource* timer = _pcm_timer;
+    _pcm->setScheduler([timer](PcmTime when) { EventList::sourceIsPending(*timer, when); },
+                       eventlist().now());
+}
+
+void UecSrc::pcmEvent(std::vector<PcmSignalUpdate>& updates) {
+    // The window, bytes in flight and backlog are uet_tx_* signals, but they are
+    // reported with every event, not only sent packets, so that a handler always
+    // reads their current values. See docs/pcm-plan.md §7.
+    const PcmSenderSignals& s = pcmSig();
+    updates.push_back(pcmUpdate(s.tx_cwnd, _cwnd));
+    updates.push_back(pcmUpdate(s.tx_inflight_bytes, _in_flight));
+    updates.push_back(pcmUpdate(s.tx_backlog_bytes, _backlog + _rtx_backlog));
+    for (auto& u : updates)
+        u.value = pcmToSignalUnits(u.signal->unit, u.value, _pcm->units());
+
+    const uint64_t cwnd_updates = _pcm->counters().cwnd_updates;
+    _pcm->onEvent(updates, eventlist().now());
+    if (_pcm->counters().cwnd_updates != cwnd_updates)
+        _cwnd = mem_b(*_pcm->cwnd());
+}
+
+void UecSrc::pcmTimer() {
+    const uint64_t cwnd_updates = _pcm->counters().cwnd_updates;
+    _pcm->onTimer(eventlist().now());
+    if (_pcm->counters().cwnd_updates != cwnd_updates) {
+        _cwnd = mem_b(*_pcm->cwnd());
+        sendIfPermitted();
+    }
+}
 
 /* 
     The following variable values are not default values, there are initializer values. The actual
@@ -568,6 +679,11 @@ UecSrc::UecSrc(TrafficLogger* trafficLogger,
                 updateCwndOnAck = &UecSrc::dontUpdateCwndOnAck;
                 updateCwndOnNack = &UecSrc::dontUpdateCwndOnNack;
                 break;
+            case PCM:
+                // Not called: PCM flows pass ACKs and NACKs to their CCC instead.
+                updateCwndOnAck = &UecSrc::dontUpdateCwndOnAck;
+                updateCwndOnNack = &UecSrc::dontUpdateCwndOnNack;
+                break;
             default:
                 cout << "Unknown CC algo specified " << _sender_cc_algo << endl;
                 assert(0);
@@ -833,7 +949,8 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " eta_inc " << _nscc_overall_stats.inc_eta_bytes 
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
-                    << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
+                    << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes
+                    << pcmFlowStats(_pcm)
                     << endl;
                 cancelRTO();
                 _done_sending = true;
@@ -853,7 +970,8 @@ bool UecSrc::checkFinished(UecDataPacket::seq_t cum_ack) {
                     << " eta_inc " << _nscc_overall_stats.inc_eta_bytes 
                     << " multi_dec -" << _nscc_overall_stats.dec_multi_bytes 
                     << " quick_dec -" << _nscc_overall_stats.dec_quick_bytes 
-                    << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes 
+                    << " nack_dec -" << _nscc_overall_stats.dec_nack_bytes
+                    << pcmFlowStats(_pcm)
                     << endl;
                 _speculating = false;
                 if (_end_trigger) {
@@ -906,6 +1024,9 @@ void UecSrc::processAck(const UecAckPacket& pkt) {
     
     auto cum_ack = pkt.cumulative_ack();
     bool rtx_echo = pkt.rtx_echo();
+    // PCM's uet_rx_ack_count: packets this ACK newly acknowledges, cumulatively
+    // or selectively. Each one leaves the send records or the retransmit queue.
+    const size_t pcm_unacked_before = _pcm ? _tx_bitmap.size() + _rtx_queue.size() : 0;
     //handle flight_size based on recvd_bytes in packet.
     uint64_t newly_recvd_bytes = 0;
 
@@ -1049,7 +1170,21 @@ void UecSrc::processAck(const UecAckPacket& pkt) {
             << " sending_time " << timeAsUs(send_time)
             << endl;
     }
-    if (_sender_based_cc){
+    if (_sender_based_cc && _pcm) {
+        const PcmSenderSignals& s = pcmSig();
+        std::vector<PcmSignalUpdate> u = {
+            pcmUpdate(s.rx_ack, 1),
+            pcmUpdate(s.rx_ack_bytes, int64_t(newly_recvd_bytes)),
+            pcmUpdate(s.rx_ack_count,
+                      int64_t(pcm_unacked_before - (_tx_bitmap.size() + _rtx_queue.size()))),
+            pcmUpdate(s.rx_ack_ecn, pkt.ecn_echo() ? 1 : 0),
+            pcmUpdate(s.rx_ack_probe, pkt.is_probe_ack() ? 1 : 0),
+        };
+        // An RTT sample only when the send record was valid (raw_rtt was set).
+        if (raw_rtt > 0)
+            u.push_back(pcmUpdate(s.rx_ack_rtt, int64_t(raw_rtt)));
+        pcmEvent(u);
+    } else if (_sender_based_cc){
         /*if (pkt.ecn_echo()){
             (this->*updateCwndOnAck)(pkt.ecn_echo(), delay, pkt_size);
             (this->*updateCwndOnAck)(false, delay, newly_recvd_bytes - pkt_size);
@@ -1129,7 +1264,10 @@ bool UecSrc::can_send_RCCC() {
 
 bool UecSrc::can_send_NSCC(mem_b pkt_size) {
     assert(_sender_based_cc);
-    return (pkt_size > 0) 
+    // A CCC in the ERROR state admits no new packets (§3.6.18.7.2.1).
+    if (_pcm && _pcm->inError())
+        return false;
+    return (pkt_size > 0)
     	   && (((!_loss_recovery_mode && _cwnd >= _in_flight + pkt_size) 
                 || (_loss_recovery_mode && (!_rtx_queue.empty() || _cwnd >= _in_flight + pkt_size))));
 }
@@ -1578,7 +1716,20 @@ void UecSrc::processNack(const UecNackPacket& pkt) {
             << " seqno " << seqno
             << " trimming " << endl;
     }
-    if (_sender_based_cc){
+    if (_sender_based_cc && _pcm) {
+        // The sink only sends NACKs for trimmed packets, so every NACK is a trim
+        // NACK.
+        const PcmSenderSignals& s = pcmSig();
+        std::vector<PcmSignalUpdate> u = {
+            pcmUpdate(s.rx_nack, 1),
+            pcmUpdate(s.rx_nack_ecn, pkt.ecn_echo() ? 1 : 0),
+            pcmUpdate(s.rx_nack_rtt, int64_t(raw_rtt)),
+            pcmUpdate(s.rx_nack_trim, 1),
+            pcmUpdate(s.rx_nack_last_hop_trim, pkt.last_hop() ? 1 : 0),
+            pcmUpdate(s.rx_nack_bytes, pkt_size),
+        };
+        pcmEvent(u);
+    } else if (_sender_based_cc){
         (this->*updateCwndOnNack)(ev, pkt_size,pkt.last_hop());
     }
 
@@ -1718,6 +1869,9 @@ void UecSrc::startConnection() {
 
     assert(!hasStarted());
     _last_event_time.emplace(eventlist().now());
+
+    if (_sender_based_cc && _sender_cc_algo == PCM)
+        pcmStart();
 
     cout << "Flow " << _name << " flowId " << flowId() << " " << _nodename << " starting at "
          << timeAsUs(eventlist().now()) << endl;
@@ -2110,6 +2264,12 @@ mem_b UecSrc::sendNewPacket(const Route& route) {
 
     assert(full_pkt_size > 0);
 
+    if (_pcm) {
+        std::vector<PcmSignalUpdate> u = {pcmUpdate(pcmSig().tx_req, 1),
+                                          pcmUpdate(pcmSig().tx_req_bytes, full_pkt_size)};
+        pcmEvent(u);
+    }
+
     return full_pkt_size;
 }
 
@@ -2148,6 +2308,12 @@ mem_b UecSrc::sendRtxPacket(const Route& route) {
     p->sendOn();
     _stats.rtx_pkts_sent++;
     startRTO(eventlist().now());
+
+    if (_pcm) {
+        std::vector<PcmSignalUpdate> u = {pcmUpdate(pcmSig().tx_req, 1),
+                                          pcmUpdate(pcmSig().tx_req_bytes, full_pkt_size)};
+        pcmEvent(u);
+    }
     return full_pkt_size;
 }
 
@@ -2331,6 +2497,11 @@ void UecSrc::rtxTimerExpired() {
     // Trigger multipathing feedback for timeout. Unless we save EVs on the sender per packet, we will 
     // not be able to recover the original timed-out ev.
     _mp->processEv(UecMultipath::UNKNOWN_EV, UecMultipath::PATH_TIMEOUT);
+
+    if (_pcm) {
+        std::vector<PcmSignalUpdate> u = {pcmUpdate(pcmSig().tx_rto, 1)};
+        pcmEvent(u);
+    }
 
     // update flightsize?
 
