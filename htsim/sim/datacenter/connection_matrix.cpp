@@ -802,6 +802,13 @@ bool ConnectionMatrix::load(istream& file){
                 } else if (tokens[i] == "prio") {
                     i++;
                     c->priority = stoi(tokens[i]);
+                } else if (tokens[i] == "ccc") {
+                    i++;
+                    if (i >= tokens.size()) {
+                        cerr << "Error: ccc needs a group name at line " << linecount << endl;
+                        exit(1);
+                    }
+                    c->ccc_group = tokens[i];
                 } else {
                     cerr << "Error: unknown token: " << tokens[i] << " at line "
                          << linecount << endl;

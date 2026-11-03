@@ -1,0 +1,45 @@
+connection_matrices/one.cm
+!Experiment PCM DCTCP single connection
+!Binary ./htsim_uec
+!Param -sender_cc_only
+!Param -end 1000
+!Param -pcm ../pcm/algorithms/dctcp.yaml
+!tailFCT 190
+connection_matrices/incast.cm
+!Experiment PCM DCTCP small 16 node incast
+!Binary ./htsim_uec
+!Param -sender_cc_only
+!Param -end 3000
+!Param -pcm ../pcm/algorithms/dctcp.yaml
+!tailFCT 2600
+connection_matrices/incast_128.cm
+!Experiment PCM DCTCP 128 node incast
+!Binary ./htsim_uec
+!Param -sender_cc_only
+!Param -end 25000
+!Param -pcm ../pcm/algorithms/dctcp.yaml
+!tailFCT 22000
+connection_matrices/perm_32n_32c_2MB.cm
+!Experiment PCM DCTCP 32 node permutation
+!Binary ./htsim_uec
+!Param -sender_cc_only
+!Param -end 2000
+!Param -topo topologies/leaf_spine_tiny.topo
+!Param -pcm ../pcm/algorithms/dctcp.yaml
+!tailFCT 820
+connection_matrices/pcm/pair_group.cm
+!Experiment PCM flow group sharing one window
+!Binary ./htsim_uec
+!Param -sender_cc_only
+!Param -end 5000
+!Param -cwnd 10
+!Param -pcm ../pcm/algorithms/constant.yaml
+!tailFCT 1650
+connection_matrices/incast.cm
+!Experiment PCM DCTCP small 16 node incast, 1.1 us handler time
+!Binary ./htsim_uec
+!Param -sender_cc_only
+!Param -end 3000
+!Param -pcm ../pcm/algorithms/dctcp.yaml
+!Param -pcm_handler_time_ns 1100
+!tailFCT 2700

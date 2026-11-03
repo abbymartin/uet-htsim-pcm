@@ -1,0 +1,61 @@
+Using validate_pcm.txt as experiment plan
+Using binary: ./htsim_uec
+
+
+Experiment: PCM DCTCP single connection 
+==========================================
+Running ./htsim_uec -tm connection_matrices/one.cm -sender_cc_only -end 1000 -pcm ../pcm/algorithms/dctcp.yaml 
+[PASS] Tail FCT 176.2 us below the target of 190 us
+[PASS] Connection count 1
+FCT Spread 176.2 -> 176.2 ratio 1.0
+Summary: PCM: CCCs: 1 Events: 614 Calls: 124 DeadlineCalls: 0 TimerEvents: 0 CwndUpdates: 124 RequestsWhileBusy: 0 Errors: 0
+Using binary: ./htsim_uec
+
+
+Experiment: PCM DCTCP small 16 node incast 
+==========================================
+Running ./htsim_uec -tm connection_matrices/incast.cm -sender_cc_only -end 3000 -pcm ../pcm/algorithms/dctcp.yaml 
+[PASS] Tail FCT 2479.8 us below the target of 2600 us
+[PASS] Connection count 15
+FCT Spread 1247.77 -> 2479.8 ratio 1.9873854957243724
+Summary: PCM: CCCs: 15 Events: 15310 Calls: 6677 DeadlineCalls: 0 TimerEvents: 0 CwndUpdates: 6677 RequestsWhileBusy: 0 Errors: 0
+Using binary: ./htsim_uec
+
+
+Experiment: PCM DCTCP 128 node incast 
+==========================================
+Running ./htsim_uec -tm connection_matrices/incast_128.cm -sender_cc_only -end 25000 -pcm ../pcm/algorithms/dctcp.yaml 
+[PASS] Tail FCT 21071.6 us below the target of 22000 us
+[PASS] Connection count 127
+FCT Spread 10701.1 -> 21071.6 ratio 1.96910597975909
+Summary: PCM: CCCs: 127 Events: 283635 Calls: 141740 DeadlineCalls: 0 TimerEvents: 0 CwndUpdates: 141740 RequestsWhileBusy: 0 Errors: 0
+Using binary: ./htsim_uec
+
+
+Experiment: PCM DCTCP 32 node permutation 
+==========================================
+Running ./htsim_uec -tm connection_matrices/perm_32n_32c_2MB.cm -sender_cc_only -end 2000 -topo topologies/leaf_spine_tiny.topo -pcm ../pcm/algorithms/dctcp.yaml 
+[PASS] Tail FCT 777.796 us below the target of 820 us
+[PASS] Connection count 32
+FCT Spread 167.465 -> 777.796 ratio 4.6445287074911175
+Summary: PCM: CCCs: 32 Events: 26092 Calls: 9750 DeadlineCalls: 0 TimerEvents: 0 CwndUpdates: 9750 RequestsWhileBusy: 0 Errors: 0
+Using binary: ./htsim_uec
+
+
+Experiment: PCM flow group sharing one window 
+==========================================
+Running ./htsim_uec -tm connection_matrices/pcm/pair_group.cm -sender_cc_only -end 5000 -cwnd 10 -pcm ../pcm/algorithms/constant.yaml 
+[PASS] Tail FCT 1569.76 us below the target of 1650 us
+[PASS] Connection count 2
+FCT Spread 1568.61 -> 1569.76 ratio 1.0007331331561065
+Summary: PCM: CCCs: 1 Events: 1375 Calls: 395 DeadlineCalls: 0 TimerEvents: 0 CwndUpdates: 0 RequestsWhileBusy: 0 Errors: 0
+Using binary: ./htsim_uec
+
+
+Experiment: PCM DCTCP small 16 node incast, 1.1 us handler time 
+==========================================
+Running ./htsim_uec -tm connection_matrices/incast.cm -sender_cc_only -end 3000 -pcm ../pcm/algorithms/dctcp.yaml -pcm_handler_time_ns 1100 
+[PASS] Tail FCT 2566.84 us below the target of 2700 us
+[PASS] Connection count 15
+FCT Spread 616.596 -> 2566.84 ratio 4.162920291406367
+Summary: PCM: CCCs: 15 Events: 28862 Calls: 8029 DeadlineCalls: 0 TimerEvents: 8028 CwndUpdates: 8028 RequestsWhileBusy: 6810 Errors: 0

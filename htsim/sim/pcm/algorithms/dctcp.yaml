@@ -1,0 +1,47 @@
+# DCTCP (see dctcp.cpp). Works in spec or native units.
+cc_algorithm:
+  name: dctcp
+  description: "DCTCP with a per-window alpha estimate, as in Linux"
+
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_ack_count
+    macro: S_ACKED_PKTS
+    accumulator: uet_op_last
+  - name: uet_rx_ack_ecn
+    macro: S_ECN
+    accumulator: uet_op_last
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+
+control:
+  # 0 keeps the window the simulator sets up (the network's BDP by default).
+  - name: uet_tx_cwnd
+    initial_value: 0
+
+variable:
+  - {macro: V_ALPHA, dtype: float, initial_value: 1.0}  # as in Linux
+  - {macro: V_WIN_TARGET, dtype: uint, initial_value: 0}  # packets in this window
+  - {macro: V_WIN_SEEN, dtype: uint, initial_value: 0}    # ACKed or NACKed so far
+  - {macro: V_WIN_MARKED, dtype: uint, initial_value: 0}  # ECN-marked or NACKed
+  - {macro: V_CUT, dtype: uint, initial_value: 0}  # 1 once the window was cut
+
+parameter:
+  - macro: P_G
+    dtype: float
+    value: 0.0625
+    description: "Weight of the newest window in alpha (1/16)"
+  - macro: P_MTU
+    dtype: uint
+    value: 4150
+    description: "Packet size in bytes, including headers (htsim's -mtu)"

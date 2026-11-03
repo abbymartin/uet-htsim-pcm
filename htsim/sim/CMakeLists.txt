@@ -8,8 +8,24 @@ option(ENABLE_TESTS "enable the test suite" OFF)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF) # Ensures GNU extensions are disabled
-set(CMAKE_CXX_FLAGS_RELEASE -O3) # Prevent -DNDEBUG, htsim requires 
+set(CMAKE_CXX_FLAGS_RELEASE -O3) # Prevent -DNDEBUG, htsim requires
                                  # asserts to be enabled.
+
+# yaml-cpp parses PCM algorithm YAML files (UE spec v1.1 §3.6.18.8.5).
+# Fetched before the htsim compile options below so that third-party code is
+# not built with htsim's warning flags.
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    yaml-cpp
+    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+    GIT_TAG 0.8.0
+)
+FetchContent_MakeAvailable(yaml-cpp)
+
 # Set compiler flags
 add_compile_options(
     -Wall
@@ -124,9 +140,11 @@ set(SOURCE_FILES
 
 # Create static library
 add_library(htsim STATIC ${SOURCE_FILES})
+target_link_libraries(htsim PUBLIC htsim_pcm)  # PCM, defined in pcm/
 target_include_directories(htsim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}) # Needed for header-only libraries (e.g., loggertypes.h).
 
-# Add subdirectories
+# Add subdirectories. pcm comes first: datacenter links its algorithm handlers.
+add_subdirectory(pcm)
 add_subdirectory(datacenter)
 
 # Define executables and link with htsim library

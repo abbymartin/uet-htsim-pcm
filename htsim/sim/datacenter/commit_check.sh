@@ -21,6 +21,7 @@ files=(
     "validate_load_balancing_failed_snd.txt"
     "validate_load_balancing_failed_rcv.txt"
     "validate_uec_connreuse.txt"
+    "validate_pcm.txt"
 )
 
 if [ $# -ge 1 ]
@@ -65,6 +66,12 @@ for file in "${files[@]}"; do
 
     # Run the validation script and redirect output to the output file
     python3 validate.py $file >$output_relative_dir
+
+    # A suite added on this branch has no baseline on branch_to_compare yet.
+    if ! env GIT_CONFIG_GLOBAL=/dev/null git cat-file -e refs/remotes/$branch_to_compare:htsim/sim/datacenter/$output_relative_dir 2>/dev/null; then
+        echo "NOTE: no baseline for $output_filename on $branch_to_compare yet; skipping the comparison"
+        continue
+    fi
 
     # Get the old output file from branch_to_compare and store it in the old_validate_dir
     env GIT_CONFIG_GLOBAL=/dev/null git show refs/remotes/$branch_to_compare:htsim/sim/datacenter/$output_relative_dir >$old_validate_dir/$output_filename
