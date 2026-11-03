@@ -57,6 +57,9 @@ cd datacenter
   background, and **don't rebuild while it runs**: it uses the binary in
   `build/`. It regenerates `datacenter/validate_outputs/*.out`; those files
   should show no changes afterwards unless a change is meant to alter results.
+- **Exact-match check:** `datacenter/pcm_exact_match.sh` (also part of `ctest`)
+  checks that PCM ports of htsim's built-in algorithms send exactly like the
+  originals. A few seconds.
 - **PCM options:** `-pcm FILE`, `-pcm_param NAME=VALUE` (repeatable), and
   `-pcm_units spec|native`. See `./htsim_uec -help`.
 
@@ -97,8 +100,12 @@ cd datacenter
 3. Add the `.cpp` to `htsim_pcm_algorithms` in `htsim/sim/pcm/CMakeLists.txt`.
    It must stay an object library: handlers register themselves at start-up,
    and a static library would let the linker drop them.
-4. Add unit tests in `pcm/tests/` for the handler's logic, and, if htsim has a
-   built-in version of the algorithm, compare the two on the same matrix.
+4. Add unit tests in `pcm/tests/` for the handler's logic;
+   `pcm_dctcp_test.cpp` shows how to drive an algorithm with scripted ACKs and
+   NACKs. If htsim has a built-in version of the algorithm, compare the two on
+   the same matrices; an exact port can be added to `pcm_exact_match.sh`.
+5. Run it on incast and permutation matrices, including a large incast
+   (`incast_128.cm`): heavy trimming exposes mistakes that small runs hide.
 
 Things that catch people out:
 - Signal values are in the spec's units by default (time in 128 ns, ACK bytes in

@@ -353,14 +353,35 @@ In htsim, each `UecSrc` is one PDC.
 
 | Algorithm | Purpose | Notes |
 |---|---|---|
-| `dctcp_legacy` | Shows the PCM runtime changes nothing | Triggers on `uet_rx_ack` and `uet_rx_nack` with `op: wc` and count 1 (every event). Integer arithmetic copied from `uec.cpp:1105-1123`. Native units. |
-| `dctcp` | The real algorithm [Alizadeh 2010] | Once per window: α ← (1−g)·α + g·F, where F is the fraction of ECN-marked ACKs in that window; cut once per window to cwnd·(1−α/2); grow by 1 MTU per RTT. Parameters `g`, `init_cwnd`, `ai_bytes`. Switch ECN marking set with `-ecn kmin kmax`. |
+| `dctcp_legacy` | Shows the PCM runtime changes nothing | Called on every ACK and NACK. Integer arithmetic copied from `UecSrc::updateCwndOnAck_DCTCP` / `updateCwndOnNack_DCTCP`. Reads the current window from `uet_tx_cwnd`. Needs native units. |
+| `dctcp` | The real algorithm [Alizadeh 2010], as Linux implements it | Once per window of data: α ← (1−g)·α + g·F, where F is the fraction of the window's packets that were ECN-marked or NACKed. The first mark in a window cuts it to cwnd·(1−α/2); unmarked ACKs grow it by about one packet per RTT; a NACK halves it, at most once per window. Counts packets (`uet_rx_ack_count`), so it behaves the same in spec and native units. Parameters `P_G` (1/16) and `P_MTU`. Switch ECN marking is on by default (thresholds 20% / 80% of the BDP; `-ecn kmin kmax` to change). |
 
-**Exact-match test:** run `-sender_cc_algo dctcp` and `-pcm dctcp_legacy.yaml
--pcm_units native` on `one.cm`, `incast.cm` and a permutation matrix, and compare
-the outputs. The existing DCTCP prints a `DCTCP start` line on every ACK. Those
-lines are filtered out of the comparison, so the existing code and its regression
-outputs stay unchanged.
+**Why NACKs count in `dctcp`.** DCTCP has no trimming. In an early version,
+NACKs only cut the window and didn't move the window boundary forward. In a
+128-to-1 incast almost nothing is ACKed, so windows never ended, the window
+stayed at half its starting size, and the run produced millions of trims.
+Counting NACKed packets as seen and marked fixes this. A unit test covers it
+(`OnlyNacksStillShrinkTheWindow`).
+
+**Exact-match test:** `datacenter/pcm_exact_match.sh`, also run by `ctest` as
+`pcm_exact_match`. It runs each PCM port next to its built-in original
+(`constant` vs `-pcm constant.yaml`; `dctcp` vs `-pcm dctcp_legacy.yaml
+-pcm_units native`) on `one.cm`, `incast.cm` and `perm_32n_32c_2MB.cm` (with
+`leaf_spine_tiny.topo`), and diffs the outputs. It ignores only what one side
+alone prints: `PCM:` lines, PCM fields on finish lines, the algorithm choice,
+and the built-in DCTCP's per-ACK `DCTCP start` line. All six comparisons are
+identical. The DCTCP runs include about 2,300 ECN cuts and 600–800 NACKs each.
+
+**Sanity runs** (`-sender_cc_only`; mean / max flow completion time):
+
+| Scenario | NSCC | built-in DCTCP | PCM `dctcp` |
+|---|---|---|---|
+| 16-to-1 incast, 2 MB each | 2179 / 2479 µs | 2273 / 2491 µs | 2251 / 2480 µs |
+| 32-node permutation, 2 MB each | 498 / 733 µs | 508 / 723 µs | 549 / 778 µs |
+| 127-to-1 incast, 2 MB each | 20170 / 21029 µs | 20171 / 21038 µs | 20220 / 21072 µs |
+
+The 127-to-1 incast is limited by the receiver's link: 127 × 2 MB at 100 Gbit/s
+is about 20.3 ms.
 
 ## 6. Testing
 
@@ -662,18 +683,17 @@ adds its §7 entry and code comment in the same commit.
    the summary; `commit_check.sh`. Also the `htsim_pcm_algorithms` object
    library and a first algorithm, `constant` (fixed window), whose output on
    `one.cm` and `incast.cm` is identical to `-sender_cc_algo constant`.
-8. [ ] **pcm: `dctcp_legacy` and the exact-match test**, as ctest or a script,
-   covering `constant` too.
-9. [ ] **pcm: `dctcp`.** Textbook DCTCP, a unit test of α, and incast/permutation
-   sanity runs.
-10. [ ] **datacenter: flow groups.** `ccc <group>` in the connection matrix,
-    grouping by (group, src, dst), `-pcm_ccc group=file`; unit tests.
-11. [ ] **uec: shared group window.** Group bytes-in-flight, taking turns between
-    flows, group totals for signals; tests that two grouped flows share one window
-    fairly; `commit_check.sh`.
-12. [ ] **pcm: asynchronous mode.** `-pcm_exec async -pcm_handler_time_ns`; tests
+8. [x] **pcm: DCTCP.** `dctcp_legacy` (exact port of the existing DCTCP) and the
+   exact-match test, as ctest or a script, covering `constant` too; textbook
+   `dctcp`, a unit test of α, and incast/permutation sanity runs.
+9. [ ] **pcm: flow groups and shared windows.** `ccc <group>` in the connection
+   matrix, grouping by (group, src, dst), `-pcm_ccc group=file`; group
+   bytes-in-flight, taking turns between flows, group totals for signals; unit
+   tests, tests that two grouped flows share one window fairly, and
+   `commit_check.sh`.
+10. [ ] **pcm: asynchronous mode.** `-pcm_exec async -pcm_handler_time_ns`; tests
     that triggers arriving during a call are combined.
-13. [ ] **datacenter: `validate_pcm.txt` and its baseline**, added to `commit_check.sh`
+11. [ ] **datacenter: `validate_pcm.txt` and its baseline**, added to `commit_check.sh`
 
 **Later (design only now)**
 - [ ] Global variables shared per NIC

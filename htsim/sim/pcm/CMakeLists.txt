@@ -18,6 +18,8 @@ target_link_libraries(htsim_pcm PRIVATE yaml-cpp::yaml-cpp)
 # library the linker would drop them.
 add_library(htsim_pcm_algorithms OBJECT
     algorithms/constant.cpp
+    algorithms/dctcp.cpp
+    algorithms/dctcp_legacy.cpp
 )
 target_link_libraries(htsim_pcm_algorithms PUBLIC htsim_pcm)
 
@@ -38,4 +40,14 @@ if ( ENABLE_TESTS )
             PROPERTIES TIMEOUT 60
         )
     endforeach()
+
+    # Tests of the algorithms in algorithms/, which load their YAML files.
+    add_executable(pcm_dctcp_test tests/pcm_dctcp_test.cpp)
+    target_link_libraries(pcm_dctcp_test PRIVATE htsim_pcm_algorithms gtest_main)
+    target_compile_definitions(pcm_dctcp_test PRIVATE
+        PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms")
+    gtest_discover_tests(pcm_dctcp_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
 endif()

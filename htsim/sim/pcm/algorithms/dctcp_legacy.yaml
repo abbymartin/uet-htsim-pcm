@@ -1,0 +1,42 @@
+# An exact port of htsim's built-in DCTCP (see dctcp_legacy.cpp).
+# Run with -pcm_units native: the arithmetic uses exact byte counts.
+cc_algorithm:
+  name: dctcp_legacy
+  description: "htsim's built-in simplified DCTCP, ported to PCM"
+
+signal:
+  # Called on every ACK...
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_ack_bytes
+    macro: S_ACKED_BYTES
+    accumulator: uet_op_last
+  - name: uet_rx_ack_ecn
+    macro: S_ECN
+    accumulator: uet_op_last
+  # ...and every NACK.
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_nack_vend_htsim_bytes
+    macro: S_NACKED_BYTES
+    accumulator: uet_op_last
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+
+control:
+  # 0 keeps the window the simulator sets up, as the built-in version does.
+  - name: uet_tx_cwnd
+    initial_value: 0
+
+parameter:
+  - macro: P_MTU
+    dtype: uint
+    value: 4150
+    description: "Packet size in bytes, including headers (htsim's -mtu)"

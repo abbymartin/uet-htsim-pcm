@@ -29,7 +29,8 @@ Shared prerequisites, each its own commit:
   and the `uet_tx_send_rate` signal. Today the sender only enforces a window
   (`UecSrc::can_send_NSCC`). This is the biggest single piece of phase 2.
 - **Asynchronous handler mode** (`-pcm_exec async -pcm_handler_time_ns`, plan §8
-  commit 12), for the proposal's reaction-delay challenge.
+  commit 10), for the proposal's reaction-delay challenge. It is part of
+  phase 1, but listed here because phase 2's comparisons depend on it.
 - **Remote service time** (`uet_rx_ack_svc`) if an algorithm needs it: the ACK
   field exists but is never set.
 
