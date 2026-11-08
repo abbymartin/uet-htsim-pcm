@@ -1,0 +1,85 @@
+# TIMELY-inspired RTT-gradient congestion control over PCM CWND.
+#
+# Standard TIMELY is rate-based. This implementation uses CWND
+# because PCM exposes congestion-window control.
+#
+# RTT regions:
+#   RTT below T_LOW:
+#       Increase CWND.
+#   RTT above T_HIGH:
+#       Decrease CWND.
+#   RTT between thresholds:
+#       Use the smoothed RTT gradient.
+#
+# NACK policy:
+#   High-RTT NACKs cause a bounded decrease.
+#   Low-RTT NACKs do not independently reduce CWND.
+#
+# Timing:
+#   RTT thresholds and update intervals use 128-ns PCM ticks.
+#
+# Limitations:
+#   - No explicit pacing-rate control.
+#   - CWND is used as a proxy for sending rate.
+#   - NACK behavior is project-specific.
+#   #   - The gradient compares RTT samples at control update intervals.
+#   - RTT gradients are normalized by the previous sampled RTT.
+#   - RTT-gradient smoothing uses P_SMOOTHING.
+#   - NACK feedback does not modify the RTT-gradient history.
+cc_algorithm:
+  name: timely
+  description: "TIMELY RTT-gradient congestion control via CWND approximation"
+
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke, invoke_deadline: 0}
+
+  - name: uet_rx_ack_bytes
+    macro: S_ACK_BYTES
+    accumulator: uet_op_last
+
+  - name: uet_rx_ack_rtt
+    macro: S_ACK_RTT
+    accumulator: uet_op_last
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke, invoke_deadline: 0}
+
+  - name: uet_rx_nack_rtt
+    macro: S_NACK_RTT
+    accumulator: uet_op_last
+  - name: uet_time_current
+    macro: S_NOW
+    accumulator: uet_op_last
+
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+
+control:
+  - name: uet_tx_cwnd
+    initial_value: 0
+
+variable:
+  - {macro: V_PREV_RTT, dtype: uint, initial_value: 0}
+  - {macro: V_GRADIENT, dtype: float, initial_value: 0.0}
+  - {macro: V_LAST_UPDATE, dtype: uint, initial_value: 0}
+  - {macro: V_INITIALIZED, dtype: uint, initial_value: 0}
+
+parameter:
+  - {macro: P_MIN_CWND, dtype: uint, value: 4150}
+  - {macro: P_MAX_CWND, dtype: uint, value: 262926}
+  - {macro: P_INITIAL_CWND, dtype: uint, value: 49800}
+
+  # RTT thresholds in 128-ns ticks.
+  - {macro: P_T_LOW, dtype: uint, value: 391}
+  - {macro: P_T_HIGH, dtype: uint, value: 3910}
+
+  - {macro: P_ALPHA, dtype: float, value: 0.01}
+  - {macro: P_BETA, dtype: float, value: 0.8}
+  - {macro: P_SMOOTHING, dtype: float, value: 0.8}
+  - {macro: P_UPDATE_INTERVAL, dtype: uint, value: 110}
+  - {macro: P_NACK_REDUCTION, dtype: float, value: 0.5}

@@ -20,6 +20,11 @@ add_library(htsim_pcm_algorithms OBJECT
     algorithms/constant.cpp
     algorithms/dctcp.cpp
     algorithms/dctcp_legacy.cpp
+    algorithms/nscc.cpp
+    algorithms/dcqcn.cpp
+    algorithms/swift.cpp
+    algorithms/timely.cpp
+    algorithms/bbr.cpp
 )
 target_link_libraries(htsim_pcm_algorithms PUBLIC htsim_pcm)
 
@@ -47,6 +52,64 @@ if ( ENABLE_TESTS )
     target_compile_definitions(pcm_dctcp_test PRIVATE
         PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms")
     gtest_discover_tests(pcm_dctcp_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    # NSCC algorithm tests.
+    add_executable(pcm_nscc_test tests/pcm_nscc_test.cpp)
+    target_link_libraries(pcm_nscc_test PRIVATE
+        htsim_pcm_algorithms gtest_main)
+    target_compile_definitions(pcm_nscc_test PRIVATE
+        PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms")
+    gtest_discover_tests(pcm_nscc_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+
+    # DCQCN algorithm tests.
+    add_executable(pcm_dcqcn_test tests/pcm_dcqcn_test.cpp)
+    target_link_libraries(pcm_dcqcn_test PRIVATE
+        htsim_pcm_algorithms gtest_main)
+    target_compile_definitions(pcm_dcqcn_test PRIVATE
+        PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms")
+    gtest_discover_tests(pcm_dcqcn_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+        # Swift algorithm tests.
+    add_executable(pcm_swift_test tests/pcm_swift_test.cpp)
+    target_link_libraries(pcm_swift_test PRIVATE
+        htsim_pcm_algorithms gtest_main)
+    target_compile_definitions(pcm_swift_test PRIVATE
+        PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms")
+    gtest_discover_tests(pcm_swift_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+    # TIMELY algorithm tests.
+    add_executable(pcm_timely_test tests/pcm_timely_test.cpp)
+    target_link_libraries(pcm_timely_test PRIVATE
+        htsim_pcm_algorithms gtest_main)
+    target_compile_definitions(pcm_timely_test PRIVATE
+        PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms")
+    gtest_discover_tests(pcm_timely_test
+        PROPERTIES LABELS "unit"
+        PROPERTIES TIMEOUT 60
+    )
+    # BBR algorithm tests.
+    add_executable(pcm_bbr_test tests/pcm_bbr_test.cpp)
+
+    target_link_libraries(pcm_bbr_test PRIVATE
+        htsim_pcm_algorithms
+        gtest_main
+    )
+
+    target_compile_definitions(pcm_bbr_test PRIVATE
+        PCM_ALGORITHMS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/algorithms"
+    )
+
+    gtest_discover_tests(pcm_bbr_test
         PROPERTIES LABELS "unit"
         PROPERTIES TIMEOUT 60
     )
