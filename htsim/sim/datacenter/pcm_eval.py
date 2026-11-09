@@ -238,61 +238,85 @@ def absolute_paths(args):
 
 
 # (heading, summary.csv column, decimals) for the printed and Markdown tables.
-TABLE_COLUMNS = [
-    ("unfin", "unfinished", 1), ("fct_p50", "fct_p50_us", 1),
-    ("fct_p99", "fct_p99_us", 1), ("fct_max", "fct_max_us", 1),
-    ("jct", "jct_us", 1), ("Gbit/s", "goodput_gbps", 1), ("jain", "jain", 3),
-    ("rtx%", "rtx_pct", 2), ("trims", "trims", 0),
-    ("qmax_KB", "q_max_bytes", 1), ("qmean_KB", "q_mean_bytes", 1),
-    ("calls/MB", "pcm_calls_per_mb", 1)]
+# The rows of each summary table: label, summary field, digits, and which value
+# is best ("min", "max", or None if no value is best).
+TABLE_ROWS = [
+    ("unfinished flows", "unfinished", 1, None),
+    ("FCT p50 (us)", "fct_p50_us", 1, "min"),
+    ("FCT p99 (us)", "fct_p99_us", 1, "min"),
+    ("JCT (us)", "jct_us", 1, "min"),
+    ("goodput (Gbit/s)", "goodput_gbps", 1, "max"),
+    ("Jain fairness", "jain", 3, "max"),
+    ("retransmitted (%)", "rtx_pct", 2, "min"),
+    ("trims", "trims", 0, "min"),
+    ("peak queue (KB)", "q_max_bytes", 1, "min"),
+    ("mean queue (KB)", "q_mean_bytes", 1, "min"),
+    ("handler calls / MB", "pcm_calls_per_mb", 1, None),
+]
 
 
-def summary_table(rows, scenarios, algos):
-    """Return the table rows: scenario, job, algorithm, then the mean over the
-    seeds of each column in TABLE_COLUMNS ('-' if a seed has no value)."""
+def summary_tables(rows, scenarios, algos):
+    """Return one table for each scenario and job: (scenario, job, lines).
+    Each line is (label, digits, best, means), with the mean over the seeds for
+    each algorithm (None if a seed has no value). Lines without values are
+    left out."""
     groups = {}
     for r in rows:
-        groups.setdefault((r["scenario"], r["job"], r["algorithm"]), []).append(r)
-    order = lambda k: (scenarios.index(k[0]), k[1] != "all", k[1], list(algos).index(k[2]))
-    table = []
-    for key, rs in sorted(groups.items(), key=lambda g: order(g[0])):
-        cells = list(key)
-        for _, field, digits in TABLE_COLUMNS:
-            vals = [r.get(field) for r in rs]
-            if any(v is None for v in vals):
-                cells.append("-")
-                continue
-            mean = sum(vals) / len(vals)
-            if field.startswith("q_"):
-                mean /= 1024
-            cells.append(f"{mean:.{digits}f}")
-        table.append(cells)
-    return table
+        groups.setdefault((r["scenario"], r["job"]), {}).setdefault(
+            r["algorithm"], []).append(r)
+    order = lambda k: (scenarios.index(k[0]), k[1] != "all", k[1])
+    tables = []
+    for key in sorted(groups, key=order):
+        lines = []
+        for label, field, digits, best in TABLE_ROWS:
+            means = []
+            for a in algos:
+                vals = [r.get(field) for r in groups[key].get(a, [])]
+                if not vals or any(v is None for v in vals):
+                    means.append(None)
+                    continue
+                mean = sum(vals) / len(vals)
+                means.append(mean / 1024 if field.startswith("q_") else mean)
+            if any(m is not None for m in means):
+                lines.append((label, digits, best, means))
+        tables.append((*key, lines))
+    return tables
 
 
-def table_note(seeds):
-    return (f"Mean over seeds {','.join(map(str, seeds))}. Times in us; KB = 1024 bytes; "
-            "'-' means no value for at least one seed.")
+def table_cells(digits, best, means):
+    """Format the means. The best value is in bold; each other value has its
+    difference from the best in percent."""
+    cells = [f"{m:.{digits}f}" if m is not None else "-" for m in means]
+    known = [m for m in means if m is not None]
+    if best is None or len(known) < 2:
+        return cells
+    top = (min if best == "min" else max)(known)
+    for i, m in enumerate(means):
+        if m is None:
+            continue
+        if cells[i] == f"{top:.{digits}f}":
+            cells[i] = f"**{cells[i]}**"
+        elif top != 0:
+            d = (m - top) / top * 100
+            cells[i] += f" ({d:+.0f}%)" if abs(d) >= 10 else f" ({d:+.1f}%)"
+    return cells
 
 
-def print_table(table, seeds):
-    print(table_note(seeds))
-    header = f"{'scenario':12} {'job':8} {'algorithm':16}" + "".join(
-        f" {c[0]:>9}" for c in TABLE_COLUMNS)
-    print(header)
-    print("-" * len(header))
-    for cells in table:
-        print(f"{cells[0]:12} {cells[1]:8} {cells[2]:16}" + "".join(f" {c:>9}" for c in cells[3:]))
-
-
-def write_markdown(path, table, seeds):
-    headings = ["scenario", "job", "algorithm"] + [c[0] for c in TABLE_COLUMNS]
-    with open(path, "w") as f:
-        f.write(table_note(seeds) + "\n\n")
-        f.write("| " + " | ".join(headings) + " |\n")
-        f.write("|" + "---|" * 3 + "--:|" * len(TABLE_COLUMNS) + "\n")
-        for cells in table:
-            f.write("| " + " | ".join(cells) + " |\n")
+def markdown(tables, algos, seeds):
+    out = [f"Mean over seeds {','.join(map(str, seeds))}. KB = 1024 bytes. "
+           "Bold: the best value. (+N%): the difference from the best value. "
+           "'-': no value for at least one seed.", ""]
+    for scenario, job, lines in tables:
+        out += [f"### {scenario}" + ("" if job == "all" else f", job {job}"), "",
+                "| metric | better | " + " | ".join(algos) + " |",
+                "|---|---|" + "--:|" * len(algos)]
+        for label, digits, best, means in lines:
+            word = {"min": "smaller", "max": "larger", None: ""}[best]
+            if label == "unfinished flows":
+                word = "0"
+            out.append(f"| {label} | {word} | " + " | ".join(table_cells(digits, best, means)) + " |")
+        out.append("")
+    return "\n".join(out)
 
 
 def main():
@@ -363,9 +387,10 @@ def main():
             w.writeheader()
             w.writerows(data)
 
-    table = summary_table(summary, scenarios, algos)
-    write_markdown(os.path.join(args.out, "summary.md"), table, seeds)
-    print_table(table, seeds)
+    text = markdown(summary_tables(summary, scenarios, algos), algos, seeds)
+    with open(os.path.join(args.out, "summary.md"), "w") as f:
+        f.write(text)
+    print(text)
     failed = [r for r in summary if r["job"] == "all" and r["status"] != "ok"]
     for r in failed:
         print(f"FAILED: {r['scenario']} {r['algorithm']} seed {r['seed']}: {r['status']}"

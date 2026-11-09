@@ -109,7 +109,9 @@ class Runs(unittest.TestCase):
         out, rows = self.run_eval("--scenarios", "incast_8",
                                   "--algo", "pcm_dctcp=-pcm ../pcm/algorithms/dctcp.yaml")
         with open(os.path.join(out, "summary.md")) as f:
-            self.assertIn("| incast_8 | all | pcm_dctcp | 0.0 |", f.read())
+            text = f.read()
+        self.assertIn("### incast_8\n", text)
+        self.assertIn("| unfinished flows | 0 | 0.0 |", text)
         self.assertEqual(len(rows), 1)
         r = rows[0]
         self.assertEqual((r["job"], r["status"], r["flows"], r["unfinished"]),
