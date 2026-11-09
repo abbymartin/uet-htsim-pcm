@@ -49,6 +49,9 @@ failed run, and then exits with 1.
 
 KB = 1024 bytes and MB = 1024 KB. Times are in µs.
 
+For each column of the results table, [pcm-results.md](pcm-results.md) §2
+tells if larger or smaller is better, and which values to expect.
+
 Each run has a row with job `all`. When the matrix puts flows in PCM flow groups
 (`ccc GROUP`), each group is a job and has its own row too. Run totals
 (retransmissions to PCM errors in the table) are only on the `all` row.
