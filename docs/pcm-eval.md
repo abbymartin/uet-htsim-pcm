@@ -36,12 +36,12 @@ output there, but it does not delete a directory that it did not make.
 | File | Content |
 |---|---|
 | `summary.csv` | One row for each job of each run: the metrics in §2. |
-| `summary.md` | The mean over the seeds, as a Markdown table. Copy it into [pcm-results.md](pcm-results.md). |
+| `summary.md` | The mean over the seeds: one Markdown table for each scenario and job, with one column for each algorithm. The best value is in bold. Copy it into [pcm-results.md](pcm-results.md). |
 | `flows.csv` | One row for each flow of each run: hosts, size, start, finish, FCT. |
 | `runs/<scenario>/<algorithm>/seed<N>/stdout.txt` | The `htsim_uec` output. Line 1 is the command. |
 
-The script also prints the summary, with the mean over the seeds. A `-` in the
-table means that at least one seed has no value. A run fails if `htsim_uec`
+The script also prints `summary.md`. A `-` in a table means that at least one
+seed has no value. A run fails if `htsim_uec`
 fails, or if a CCC goes into the ERROR state. The script prints a line for each
 failed run, and then exits with 1.
 
@@ -49,7 +49,7 @@ failed run, and then exits with 1.
 
 KB = 1024 bytes and MB = 1024 KB. Times are in µs.
 
-For each column of the results table, [pcm-results.md](pcm-results.md) §2
+For each row of the results tables, [pcm-results.md](pcm-results.md) §2
 tells if larger or smaller is better, and which values to expect.
 
 Each run has a row with job `all`. When the matrix puts flows in PCM flow groups
