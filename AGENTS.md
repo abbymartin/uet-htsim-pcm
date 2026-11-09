@@ -15,6 +15,8 @@ applies the window it sets.
   place we differ from the spec**.
 - [docs/pcm-triggers.md](docs/pcm-triggers.md): how triggers decide when a
   handler runs.
+- [docs/pcm-eval.md](docs/pcm-eval.md): how to compare algorithms on the
+  evaluation scenarios, and what each metric means.
 - [docs/roadmap.md](docs/roadmap.md): phases 2–4 (more algorithms, AI-workload
   scenarios, data collection).
 - [htsim/README.md](htsim/README.md): upstream htsim usage.
@@ -61,6 +63,9 @@ cd datacenter
 - **PCM checks:** `datacenter/pcm_exact_match.sh` (PCM ports of htsim's built-in
   algorithms send exactly like the originals) and `datacenter/pcm_groups_check.sh`
   (flow groups share one window). Both are part of `ctest`; a few seconds each.
+- **Evaluation:** `datacenter/pcm_eval.py` runs scenarios × algorithms × seeds
+  and writes metrics to `datacenter/pcm_eval_out/` (about one minute). See
+  `docs/pcm-eval.md`.
 - **PCM options:** `-pcm FILE`, `-pcm_ccc GROUP=FILE`, `-pcm_param NAME=VALUE` or
   `GROUP:NAME=VALUE` (both repeatable), `-pcm_units spec|native`, and
   `-pcm_handler_time_ns T` (each handler call takes T; 0 = immediate). Flows are
@@ -112,6 +117,7 @@ cd datacenter
    the same matrices; an exact port can be added to `pcm_exact_match.sh`.
 5. Run it on incast and permutation matrices, including a large incast
    (`incast_128.cm`): heavy trimming exposes mistakes that small runs hide.
+   Compare it with the others: `./pcm_eval.py --algo NAME='-pcm ...' ...`.
    Then add a run to `datacenter/validate_pcm.txt`, with a `!tailFCT` bound
    about 5% above its result, and regenerate the baseline with
    `python3 validate.py validate_pcm.txt > validate_outputs/validate_pcm.out`.

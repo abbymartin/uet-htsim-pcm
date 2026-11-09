@@ -7,8 +7,8 @@ Phases 2–4 of the project proposal. Phase 1 is described in
 |---|---|---|
 | 1 | PCM runtime in htsim, verified with DCTCP (done) | — |
 | 2 | More congestion-control algorithms on PCM | 1 |
-| 3 | Simulation scenarios modelled on AI workloads | 1 (can start in parallel with 2) |
-| 4 | Data collection and analysis | 2, 3 |
+| 3 | Simulation scenarios modelled on AI workloads (first set done: [pcm-eval.md](pcm-eval.md)) | 1 (can start in parallel with 2) |
+| 4 | Data collection and analysis (runner and metrics done: [pcm-eval.md](pcm-eval.md)) | 2, 3 |
 
 ## Phase 2: more algorithms
 
