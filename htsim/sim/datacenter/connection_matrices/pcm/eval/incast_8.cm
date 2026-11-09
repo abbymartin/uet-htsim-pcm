@@ -1,0 +1,12 @@
+# PCM evaluation scenario incast_8: 8-to-1 incast, 1 MB per sender.
+# Written by gen_eval_scenarios.py (seed 1). Do not edit.
+Nodes 128
+Connections 8
+16->34 id 1 start 0 size 1048576
+65->34 id 2 start 0 size 1048576
+30->34 id 3 start 0 size 1048576
+126->34 id 4 start 0 size 1048576
+115->34 id 5 start 0 size 1048576
+120->34 id 6 start 0 size 1048576
+97->34 id 7 start 0 size 1048576
+53->34 id 8 start 0 size 1048576
