@@ -1,5 +1,9 @@
 # uec-transport-simulation-code
 
+> **This fork adds Programmable Congestion Management (PCM)** from the UE
+> specification. Start with [AGENTS.md](AGENTS.md).
+> **Current evaluation results: [docs/pcm-results.md](docs/pcm-results.md).**
+
 This repository is dedicated to the Congestion Management Group.
 
 By contributing to this project you agree to the Developer's

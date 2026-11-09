@@ -17,6 +17,8 @@ applies the window it sets.
   handler runs.
 - [docs/pcm-eval.md](docs/pcm-eval.md): how to compare algorithms on the
   evaluation scenarios, and what each metric means.
+- **[docs/pcm-results.md](docs/pcm-results.md): the current evaluation
+  results.** Update it when a change alters them.
 - [docs/roadmap.md](docs/roadmap.md): phases 2–4 (more algorithms, AI-workload
   scenarios, data collection).
 - [htsim/README.md](htsim/README.md): upstream htsim usage.

@@ -3,7 +3,8 @@
 This page tells you how to compare congestion-control algorithms on fixed
 workloads. Use it for PCM algorithms and for htsim's built-in algorithms.
 It covers phase 3 (scenarios) and the first part of phase 4 (metrics) of
-[roadmap.md](roadmap.md).
+[roadmap.md](roadmap.md). The current results are in
+[pcm-results.md](pcm-results.md).
 
 ## 1. Run it
 
@@ -35,6 +36,7 @@ output there, but it does not delete a directory that it did not make.
 | File | Content |
 |---|---|
 | `summary.csv` | One row for each job of each run: the metrics in §2. |
+| `summary.md` | The mean over the seeds, as a Markdown table. Copy it into [pcm-results.md](pcm-results.md). |
 | `flows.csv` | One row for each flow of each run: hosts, size, start, finish, FCT. |
 | `runs/<scenario>/<algorithm>/seed<N>/stdout.txt` | The `htsim_uec` output. Line 1 is the command. |
 
