@@ -4,8 +4,9 @@
 Runs htsim_uec for each scenario x algorithm x seed, in parallel, and writes:
   OUT/flows.csv     one row for each flow of each run
   OUT/summary.csv   one row for each job of each run (metrics: docs/pcm-eval.md)
+  OUT/summary.md    the mean over the seeds, as a Markdown table
   OUT/runs/...      the output of each run
-It also prints the summary, with the mean over the seeds.
+It also prints the table in summary.md.
 
 Examples (from htsim/sim/datacenter):
   ./pcm_eval.py
@@ -236,34 +237,62 @@ def absolute_paths(args):
     return out
 
 
-def print_table(rows, scenarios, algos, seeds):
-    """Print the mean over the seeds. '-' means no value for at least one seed."""
-    cols = [("unfin", "unfinished", 1), ("fct_p50", "fct_p50_us", 1),
-            ("fct_p99", "fct_p99_us", 1), ("fct_max", "fct_max_us", 1),
-            ("jct", "jct_us", 1), ("Gbit/s", "goodput_gbps", 1), ("jain", "jain", 3),
-            ("rtx%", "rtx_pct", 2), ("trims", "trims", 0),
-            ("qmax_KB", "q_max_bytes", 1), ("qmean_KB", "q_mean_bytes", 1),
-            ("calls/MB", "pcm_calls_per_mb", 1)]
+# (heading, summary.csv column, decimals) for the printed and Markdown tables.
+TABLE_COLUMNS = [
+    ("unfin", "unfinished", 1), ("fct_p50", "fct_p50_us", 1),
+    ("fct_p99", "fct_p99_us", 1), ("fct_max", "fct_max_us", 1),
+    ("jct", "jct_us", 1), ("Gbit/s", "goodput_gbps", 1), ("jain", "jain", 3),
+    ("rtx%", "rtx_pct", 2), ("trims", "trims", 0),
+    ("qmax_KB", "q_max_bytes", 1), ("qmean_KB", "q_mean_bytes", 1),
+    ("calls/MB", "pcm_calls_per_mb", 1)]
+
+
+def summary_table(rows, scenarios, algos):
+    """Return the table rows: scenario, job, algorithm, then the mean over the
+    seeds of each column in TABLE_COLUMNS ('-' if a seed has no value)."""
     groups = {}
     for r in rows:
         groups.setdefault((r["scenario"], r["job"], r["algorithm"]), []).append(r)
     order = lambda k: (scenarios.index(k[0]), k[1] != "all", k[1], list(algos).index(k[2]))
-    print(f"Mean over seeds {','.join(map(str, seeds))}; times in us, KB = 1024 bytes")
-    header = f"{'scenario':12} {'job':8} {'algorithm':16}" + "".join(f" {c[0]:>9}" for c in cols)
-    print(header)
-    print("-" * len(header))
-    for (scenario, job, algo), rs in sorted(groups.items(), key=lambda g: order(g[0])):
-        line = f"{scenario:12} {job:8} {algo:16}"
-        for _, field, digits in cols:
+    table = []
+    for key, rs in sorted(groups.items(), key=lambda g: order(g[0])):
+        cells = list(key)
+        for _, field, digits in TABLE_COLUMNS:
             vals = [r.get(field) for r in rs]
             if any(v is None for v in vals):
-                line += f" {'-':>9}"
+                cells.append("-")
                 continue
             mean = sum(vals) / len(vals)
             if field.startswith("q_"):
                 mean /= 1024
-            line += f" {mean:>9.{digits}f}"
-        print(line)
+            cells.append(f"{mean:.{digits}f}")
+        table.append(cells)
+    return table
+
+
+def table_note(seeds):
+    return (f"Mean over seeds {','.join(map(str, seeds))}. Times in us; KB = 1024 bytes; "
+            "'-' means no value for at least one seed.")
+
+
+def print_table(table, seeds):
+    print(table_note(seeds))
+    header = f"{'scenario':12} {'job':8} {'algorithm':16}" + "".join(
+        f" {c[0]:>9}" for c in TABLE_COLUMNS)
+    print(header)
+    print("-" * len(header))
+    for cells in table:
+        print(f"{cells[0]:12} {cells[1]:8} {cells[2]:16}" + "".join(f" {c:>9}" for c in cells[3:]))
+
+
+def write_markdown(path, table, seeds):
+    headings = ["scenario", "job", "algorithm"] + [c[0] for c in TABLE_COLUMNS]
+    with open(path, "w") as f:
+        f.write(table_note(seeds) + "\n\n")
+        f.write("| " + " | ".join(headings) + " |\n")
+        f.write("|" + "---|" * 3 + "--:|" * len(TABLE_COLUMNS) + "\n")
+        for cells in table:
+            f.write("| " + " | ".join(cells) + " |\n")
 
 
 def main():
@@ -334,7 +363,9 @@ def main():
             w.writeheader()
             w.writerows(data)
 
-    print_table(summary, scenarios, algos, seeds)
+    table = summary_table(summary, scenarios, algos)
+    write_markdown(os.path.join(args.out, "summary.md"), table, seeds)
+    print_table(table, seeds)
     failed = [r for r in summary if r["job"] == "all" and r["status"] != "ok"]
     for r in failed:
         print(f"FAILED: {r['scenario']} {r['algorithm']} seed {r['seed']}: {r['status']}"
