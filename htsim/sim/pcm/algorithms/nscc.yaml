@@ -1,0 +1,82 @@
+
+# PCM NSCC: sender-side approximation based on UecSrc's NSCC implementation.
+# Spec-mode time values are 128-ns ticks (NOT nanoseconds).
+# Defaults approximate the 100-Gbps, 14.0227-us RTT topology used for validation.
+# Re-tune these constants for other topologies; built-in NSCC derives them dynamically.
+cc_algorithm:
+  name: nscc
+  description: "PCM NSCC with fair, proportional, fast increase and bounded decreases (approximate)"
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_ack_bytes
+    macro: S_ACK_BYTES
+    accumulator: uet_op_last
+  - name: uet_rx_ack_ecn
+    macro: S_ACK_ECN
+    accumulator: uet_op_last
+  - name: uet_rx_ack_rtt
+    macro: S_ACK_RTT
+    accumulator: uet_op_last
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_nack_vend_htsim_bytes
+    macro: S_NACK_BYTES
+    accumulator: uet_op_last
+  - name: uet_rx_nack_rtt
+    macro: S_NACK_RTT
+    accumulator: uet_op_last
+  - name: uet_rx_nack_last_hop_trim
+    macro: S_NACK_LAST_HOP
+    accumulator: uet_op_last
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+  - name: uet_time_current
+    macro: S_NOW
+    accumulator: uet_op_last
+  - name: uet_tx_inflight_bytes
+    macro: S_INFLIGHT
+    accumulator: uet_op_last
+control:
+  - name: uet_tx_cwnd
+    initial_value: 0 # retain simulator's initialized BDP-based CWND
+variable:
+  - {macro: V_BASE_RTT, dtype: uint, initial_value: 0}
+  - {macro: V_AVG_DELAY, dtype: float, initial_value: 0.0}
+  - {macro: V_INC_BYTES, dtype: float, initial_value: 0.0}
+  - {macro: V_RECEIVED_BYTES, dtype: uint, initial_value: 0}
+  - {macro: V_FI_COUNT, dtype: uint, initial_value: 0}
+  - {macro: V_FAST_MODE, dtype: uint, initial_value: 0}
+  - {macro: V_LAST_DEC_TIME, dtype: uint, initial_value: 0}
+  - {macro: V_HAS_DECREASED, dtype: uint, initial_value: 0}
+  - {macro: V_QA_ENDTIME, dtype: uint, initial_value: 0}
+  - {macro: V_ACHIEVED_BYTES, dtype: uint, initial_value: 0}
+  - {macro: V_TRIGGER_QA, dtype: uint, initial_value: 0}
+  - {macro: V_BYTES_IGNORED, dtype: uint, initial_value: 0}
+  - {macro: V_BYTES_TO_IGNORE, dtype: uint, initial_value: 0}
+  - {macro: V_LAST_ADJUST_TIME, dtype: uint, initial_value: 0}
+parameter:
+  - {macro: P_MTU, dtype: uint, value: 4150}
+  - {macro: P_MSS, dtype: uint, value: 4086} # MTU - 64-byte header
+  - {macro: P_TARGET_QDELAY, dtype: uint, value: 82} # ~10.5 us in 128-ns ticks
+  - {macro: P_INITIAL_BASE_RTT, dtype: uint, value: 110} # ~14.1 us
+  - {macro: P_NETWORK_RTT, dtype: uint, value: 110} # NACK delay surrogate
+  - {macro: P_MAX_CWND, dtype: uint, value: 262926} # 1.5 * BDP in test topology
+  - {macro: P_ADJUST_BYTES, dtype: uint, value: 33200} # 8 * MTU
+  - {macro: P_DELAY_ALPHA, dtype: float, value: 0.0125}
+  - {macro: P_GAMMA, dtype: float, value: 0.8}
+  - {macro: P_FAIR_GAIN, dtype: float, value: 23873.7} # 5 * MSS * scaling_a
+  - {macro: P_PROP_GAIN, dtype: float, value: 203.7} # alpha * 128000 ps/tick
+  - {macro: P_FAST_SCALE, dtype: float, value: 0.29214}
+  - {macro: P_FAST_DELAY, dtype: uint, value: 8} # ~1 us
+  - {macro: P_QA_GATE, dtype: uint, value: 3}
+  - {macro: P_QA_THRESHOLD, dtype: uint, value: 328}
+  - {macro: P_ETA, dtype: float, value: 716.211} # 0.03 * P_FAIR_GAIN
+  - {macro: P_ADJUST_PERIOD, dtype: uint, value: 110}

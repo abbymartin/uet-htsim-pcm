@@ -1,0 +1,97 @@
+# DCQCN-inspired congestion control over PCM CWND.
+# Time units: 128 ns. Rate state is normalized to link capacity.
+cc_algorithm:
+  name: dcqcn
+  description: "DCQCN-inspired ECN feedback and rate recovery via CWND approximation"
+
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_ack_bytes
+    macro: S_ACK_BYTES
+    accumulator: uet_op_last
+  - name: uet_rx_ack_ecn
+    macro: S_ACK_ECN
+    accumulator: uet_op_last
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_rx_nack_ecn
+    macro: S_NACK_ECN
+    accumulator: uet_op_last
+  - name: uet_time_current
+    macro: S_NOW
+    accumulator: uet_op_last
+    trigger: {op: wc, mode_refval: 0 430, arm_mode: continuous, action: invoke,
+              invoke_deadline: 0}
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+
+control:
+  - name: uet_tx_cwnd
+    initial_value: 0
+
+variable:
+  - {macro: V_ALPHA, dtype: float, initial_value: 1.0}
+  - {macro: V_RATE, dtype: float, initial_value: 1.0}
+  - {macro: V_TARGET_RATE, dtype: float, initial_value: 1.0}
+  - {macro: V_LAST_CC_UPDATE, dtype: uint, initial_value: 0}
+  - {macro: V_LAST_ALPHA_UPDATE, dtype: uint, initial_value: 0}
+  - {macro: V_LAST_CNP, dtype: uint, initial_value: 0}
+  - {macro: V_RECOVERY_STEPS, dtype: uint, initial_value: 0}
+  - {macro: V_INITIALIZED, dtype: uint, initial_value: 0}
+  - {macro: V_CONGESTION_SEEN, dtype: uint, initial_value: 0}
+  - {macro: V_REFERENCE_CWND, dtype: uint, initial_value: 0}
+  - {macro: V_HAS_CNP, dtype: uint, initial_value: 0}
+
+parameter:
+  - macro: P_G
+    dtype: float
+    value: 0.00390625
+    description: "EWMA gain for interval-level binary congestion feedback"
+
+  - macro: P_UPDATE_PERIOD
+    dtype: uint
+    value: 430
+    description: "Alpha and recovery update interval in 128-ns ticks (~55 us)"
+
+  - macro: P_CNP_INTERVAL
+    dtype: uint
+    value: 391
+    description: "Minimum interval between accepted congestion notifications (~50 us)"
+
+  - macro: P_RECOVERY_THRESHOLD
+    dtype: uint
+    value: 5
+    description: "Recovery steps per stage before switching to the next stage"
+
+  - macro: P_RAI
+    dtype: float
+    value: 0.05
+    description: "Normalized target-rate increment during active increase"
+
+  - macro: P_RHAI
+    dtype: float
+    value: 0.10
+    description: "Normalized target-rate increment during hyperactive increase"
+
+  - macro: P_MIN_RATE
+    dtype: float
+    value: 0.02
+    description: "Minimum normalized sending rate"
+
+  - macro: P_MIN_CWND
+    dtype: uint
+    value: 4150
+    description: "Minimum congestion window in bytes"
+
+  - macro: P_REFERENCE_CWND
+    dtype: uint
+    value: 262926
+    description: "Maximum initial reference CWND in bytes; actual reference is per connection"

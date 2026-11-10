@@ -1,0 +1,95 @@
+# Swift-inspired delay-based congestion control over PCM CWND.
+#
+# Target delay:
+#   Base delay + flow-scaling delay + per-hop delay
+#
+# Flow scaling:
+#   Uses an inverse-square-root function of CWND in packets.
+#   Larger windows receive smaller flow-scaling delays.
+#
+# Congestion response:
+#   - RTT below target: additive increase on ACK.
+#   - RTT at or above target: bounded multiplicative decrease.
+#   - NACK with valid RTT: delay-based decrease if above target.
+#   - Invalid RTT: no congestion-window adjustment.
+#
+# State:
+#   - Per-connection smoothed RTT.
+#   - Timestamp of last multiplicative decrease.
+#
+# Timing:
+#   All delay parameters use 128-nanosecond PCM ticks.
+#
+# This is a Swift-inspired approximation using available PCM signals.
+#
+# Important differences from production Swift:
+#   - A single CWND is used rather than separate fabric and endpoint CWND.
+#   - RTT is treated as a combined delay measurement.
+#   - No explicit pacing mechanism for sub-packet CWND operation.
+#   - No dedicated retransmission-timeout or fast-recovery signal.
+#   - NACK handling is based on available RTT feedback.
+#   - The RTT decrease gate preserves the interval of the last decrease.
+#
+# ACK byte counts are interpreted as 256-byte units.
+# CWND is measured in bytes; target-delay scaling uses CWND / MSS.
+cc_algorithm:
+  name: swift
+  description: "Swift delay-based congestion control using PCM CWND updates"
+
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke, invoke_deadline: 0}
+
+  - name: uet_rx_ack_bytes
+    macro: S_ACK_BYTES
+    accumulator: uet_op_last
+
+  - name: uet_rx_ack_rtt
+    macro: S_ACK_RTT
+    accumulator: uet_op_last
+
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke, invoke_deadline: 0}
+
+  - name: uet_rx_nack_rtt
+    macro: S_NACK_RTT
+    accumulator: uet_op_last
+
+  - name: uet_time_current
+    macro: S_NOW
+    accumulator: uet_op_last
+
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+
+control:
+  - name: uet_tx_cwnd
+    initial_value: 0
+
+variable:
+  - {macro: V_SMOOTHED_RTT, dtype: uint, initial_value: 0}
+  - {macro: V_LAST_DECREASE, dtype: uint, initial_value: 0}
+  - {macro: V_HAS_DECREASED, dtype: uint, initial_value: 0}
+  - {macro: V_INITIALIZED, dtype: uint, initial_value: 0}
+  - {macro: V_DECREASE_INTERVAL, dtype: uint, initial_value: 0}
+
+parameter:
+  - {macro: P_MSS, dtype: uint, value: 4150}
+  - {macro: P_MIN_CWND, dtype: uint, value: 4150}
+  - {macro: P_MAX_CWND, dtype: uint, value: 262926}
+  - {macro: P_INITIAL_CWND, dtype: uint, value: 49800}
+
+  # All delay parameters are in 128-ns PCM ticks.
+  - {macro: P_BASE_DELAY, dtype: uint, value: 156}
+  - {macro: P_FS_RANGE, dtype: uint, value: 781}
+  - {macro: P_HOP_DELAY, dtype: float, value: 23.85}
+  - {macro: P_HOP_COUNT, dtype: uint, value: 4}
+
+  - {macro: P_AI, dtype: float, value: 1.0}
+  - {macro: P_BETA, dtype: float, value: 0.8}
+  - {macro: P_MAX_MDF, dtype: float, value: 0.5}

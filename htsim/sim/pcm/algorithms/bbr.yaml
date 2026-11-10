@@ -1,0 +1,126 @@
+
+cc_algorithm:
+  name: bbr
+  description: "BBRv1-inspired bandwidth and minimum-RTT congestion control using PCM CWND"
+
+signal:
+  - name: uet_rx_ack
+    macro: T_ACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke, invoke_deadline: 0}
+
+  - name: uet_rx_ack_bytes
+    macro: S_ACK_BYTES
+    accumulator: uet_op_last
+
+  - name: uet_rx_ack_rtt
+    macro: S_ACK_RTT
+    accumulator: uet_op_last
+
+  - name: uet_rx_nack
+    macro: T_NACK
+    accumulator: uet_op_sum
+    trigger: {op: wc, mode_refval: 1 0, arm_mode: continuous, action: invoke, invoke_deadline: 0}
+
+  - name: uet_time_current
+    macro: S_NOW
+    accumulator: uet_op_last
+
+  - name: uet_tx_cwnd
+    macro: S_CWND
+    accumulator: uet_op_last
+
+control:
+  - name: uet_tx_cwnd
+    initial_value: 0
+
+variable:
+  - {macro: V_MODE, dtype: uint, initial_value: 0}
+  - {macro: V_INITIALIZED, dtype: uint, initial_value: 0}
+
+  - {macro: V_MIN_RTT, dtype: uint, initial_value: 0}
+  - {macro: V_MIN_RTT_STAMP, dtype: uint, initial_value: 0}
+
+  - {macro: V_BW_ESTIMATE, dtype: float, initial_value: 0.0}
+  - {macro: V_BW_BEST, dtype: float, initial_value: 0.0}
+  - {macro: V_BW_STABLE_ROUNDS, dtype: uint, initial_value: 0}
+
+  - {macro: V_SAMPLE_START, dtype: uint, initial_value: 0}
+  - {macro: V_SAMPLE_BYTES, dtype: uint, initial_value: 0}
+
+  - {macro: V_MODE_START, dtype: uint, initial_value: 0}
+  - {macro: V_PROBE_PHASE, dtype: uint, initial_value: 0}
+  - {macro: V_LAST_NACK_DECREASE, dtype: uint, initial_value: 0}
+  - {macro: V_HAS_NACK_DECREASE, dtype: uint, initial_value: 0}
+
+
+parameter:
+  - macro: P_MSS
+    dtype: uint
+    value: 4150
+    description: "Packet size in bytes, including headers (htsim -mtu)"
+
+  - macro: P_MIN_CWND
+    dtype: uint
+    value: 4150
+    description: "Minimum congestion window in bytes"
+
+  - macro: P_MAX_CWND
+    dtype: uint
+    value: 262926
+    description: "Maximum congestion window in bytes"
+
+  - macro: P_INITIAL_CWND
+    dtype: uint
+    value: 49800
+    description: "Fallback initial CWND if simulator CWND is zero"
+
+  - macro: P_SAMPLE_INTERVAL
+    dtype: uint
+    value: 156
+    description: "Minimum ACK sampling interval in 128-ns ticks"
+
+  - macro: P_MIN_RTT_WINDOW
+    dtype: uint
+    value: 78125
+    description: "Minimum RTT refresh interval in 128-ns ticks"
+
+  - macro: P_PROBE_RTT_DURATION
+    dtype: uint
+    value: 1563
+    description: "PROBE_RTT duration in 128-ns ticks"
+
+  - macro: P_STARTUP_GAIN
+    dtype: float
+    value: 2.0
+    description: "STARTUP CWND cap relative to estimated BDP"
+
+  - macro: P_CWND_GAIN
+    dtype: float
+    value: 2.0
+    description: "Steady-state CWND target multiplier on estimated BDP"
+
+  - macro: P_FULL_BW_THRESHOLD
+    dtype: float
+    value: 1.25
+    description: "Required bandwidth growth to reset plateau counter"
+
+  - macro: P_FULL_BW_ROUNDS
+    dtype: uint
+    value: 3
+    description: "Sampling intervals without sufficient bandwidth growth"
+
+  - macro: P_PROBE_UP_GAIN
+    dtype: float
+    value: 1.25
+    description: "CWND probing multiplier during upward probing phase"
+
+  - macro: P_PROBE_DOWN_GAIN
+    dtype: float
+    value: 0.75
+    description: "CWND probing multiplier during downward probing phase"
+
+  - macro: P_NACK_REDUCTION
+    dtype: float
+    value: 0.5
+    description: "Fraction of CWND removed on eligible NACK feedback"
