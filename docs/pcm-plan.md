@@ -245,6 +245,7 @@ The 127-to-1 incast is limited by the receiver's link (127 × 2 MB at 100 Gbit/s
 | `ctest` (unit) | YAML loading, accumulators, triggers, signal state, handler API, timers and asynchronous mode (fake clock), DCTCP | seconds |
 | `pcm_exact_match.sh` (in `ctest`) | PCM ports match built-in algorithms exactly (§5) | ~2 s |
 | `pcm_groups_check.sh` (in `ctest`) | flow groups share one window and take turns (§4.5) | <1 s |
+| `pcm_eval_test.py` (in `ctest`) | evaluation metrics, scenario matrices, two short runs ([pcm-eval.md](pcm-eval.md)) | ~3 s |
 | `validate_pcm.txt` (in `commit_check.sh`) | PCM `dctcp` on single flow, 16- and 128-to-1 incast, 32-node permutation; a flow group; asynchronous mode; each with a tail-FCT bound | ~1 s |
 | `commit_check.sh` | all validation suites against the baselines on `origin/main` | ~11 min |
 

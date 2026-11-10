@@ -74,5 +74,8 @@ if ( ENABLE_TESTS )
     # PCM flow groups share one CCC and window.
     add_test(NAME pcm_groups_check COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/pcm_groups_check.sh)
     set_tests_properties(pcm_groups_check PROPERTIES LABELS "integration" TIMEOUT 300)
+    # The PCM evaluation: metrics, scenario matrices, and two short runs.
+    add_test(NAME pcm_eval_check COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/pcm_eval_test.py)
+    set_tests_properties(pcm_eval_check PROPERTIES LABELS "integration" TIMEOUT 300)
 endif()
 
