@@ -73,6 +73,20 @@ TEST_F(PipeTest, MultiplePacketsDeliveredInOrder) {
     EXPECT_EQ(eventlist_->now(), PIPE_DELAY_PICOSECONDS);
 }
 
+TEST_F(PipeTest, CountsBytesReceived) {
+    std::unique_ptr<MockPacket> pkt1 = std::make_unique<MockPacket>(PACKET_SIZE);
+    std::unique_ptr<MockPacket> pkt2 = std::make_unique<MockPacket>(64);
+    EXPECT_CALL(*pkt1, sendOn()).Times(1);
+    EXPECT_CALL(*pkt2, sendOn()).Times(1);
+
+    EXPECT_EQ(pipe_->bytes_received(), 0u);
+    pipe_->receivePacket(*pkt1);
+    pipe_->receivePacket(*pkt2);
+    EXPECT_EQ(pipe_->bytes_received(), PACKET_SIZE + 64u);
+    while (eventlist_->doNextEvent()) {
+    }
+}
+
 TEST_F(PipeTest, DelayConfiguration) {
     EXPECT_EQ(pipe_->delay(), PIPE_DELAY_PICOSECONDS);
 }

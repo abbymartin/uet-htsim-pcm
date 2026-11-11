@@ -66,7 +66,7 @@ static const char * help =
 "\t[-ar_sticky_delta NUM] [-ar_granularity STR]\n"
 "\t[-ar_method STR] [-strat STR]\n"
 "\t[-pcm FNAME] [-pcm_ccc STR] [-pcm_param STR] [-pcm_units STR]\n"
-"\t[-pcm_handler_time_ns UINT]\n"
+"\t[-pcm_handler_time_ns UINT] [-rtt_log FNAME] [-link_stats]\n"
 "\n"
 "Notes:\n"
 " FNAME: File name\n"
@@ -119,6 +119,13 @@ static const char * help =
 "                        set by the handler takes effect this long after the\n"
 "                        call starts, and calls asked for meanwhile are\n"
 "                        combined into one. Default: 0 (immediate)\n"
+"  -rtt_log FNAME        Write each RTT sample that a sender measures from an\n"
+"                        ACK to this file, as one line \"<flow id> <RTT in ps>\".\n"
+"                        Default: off\n"
+"  -link_stats           At the end, print one line for each switch-to-switch\n"
+"                        and switch-to-host link: \"Link <queue name> Bytes <bytes\n"
+"                        that entered the link> Gbps <link rate> Drops <packets\n"
+"                        the queue dropped>\". Default: off\n"
 "  -sender_cc            Enable Sender based Congestion Control.\n"
 "                        Default: True.\n"
 "  -receiver_cc          Enable Receiver based Congestion Control.\n"
@@ -272,6 +279,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> pcm_params;           // -pcm_param
     bool pcm_units_set = false;                    // -pcm_units
     bool pcm_handler_time_set = false;             // -pcm_handler_time_ns
+    bool link_stats = false;                       // -link_stats
     double pcie_rate = 1.1;
 
     filename << "logout.dat";
@@ -699,6 +707,15 @@ int main(int argc, char **argv) {
             UecSrc::_pcm_handler_time = timeFromNs(atof(argv[i+1]));
             pcm_handler_time_set = true;
             i++;
+        } else if (!strcmp(argv[i],"-rtt_log")) {
+            UecSrc::_rtt_log = fopen(argv[i+1], "w");
+            if (!UecSrc::_rtt_log) {
+                cout << "Cannot open -rtt_log file " << argv[i+1] << endl;
+                exit(1);
+            }
+            i++;
+        } else if (!strcmp(argv[i],"-link_stats")) {
+            link_stats = true;
         } else if (!strcmp(argv[i],"-help")) {
             exit_error(argv[0]);
         } else {
@@ -1320,6 +1337,41 @@ int main(int argc, char **argv) {
              << " DeadlineCalls: " << deadline_calls << " TimerEvents: " << timer_events
              << " CwndUpdates: " << cwnd_updates << " RequestsWhileBusy: " << while_busy
              << " Errors: " << errors << endl;
+    }
+    if (UecSrc::_rtt_log) {
+        fclose(UecSrc::_rtt_log);
+        UecSrc::_rtt_log = nullptr;
+    }
+    if (link_stats) {
+        // Every link that leaves a switch, with the queue that feeds it. Host
+        // uplinks (queues_ns_nlp, the NIC queues) are left out.
+        for (auto& t : topo) {
+            for (auto [queues, pipes] : {
+                     make_pair(&t->queues_nlp_ns, &t->pipes_nlp_ns),
+                     make_pair(&t->queues_nlp_nup, &t->pipes_nlp_nup),
+                     make_pair(&t->queues_nup_nlp, &t->pipes_nup_nlp),
+                     make_pair(&t->queues_nup_nc, &t->pipes_nup_nc),
+                     make_pair(&t->queues_nc_nup, &t->pipes_nc_nup)}) {
+                for (size_t a = 0; a < queues->size(); a++)
+                    for (size_t b = 0; b < (*queues)[a].size(); b++)
+                        for (size_t c = 0; c < (*queues)[a][b].size(); c++) {
+                            BaseQueue* q = (*queues)[a][b][c];
+                            Pipe* pipe = (*pipes)[a][b][c];
+                            if (!q || !pipe)
+                                continue;
+                            // Packets the queue dropped (not trimmed); "-" if
+                            // the queue type does not count them.
+                            Queue* counted = dynamic_cast<Queue*>(q);
+                            cout << "Link " << q->str() << " Bytes " << pipe->bytes_received()
+                                 << " Gbps " << q->bitrate() / 1e9 << " Drops ";
+                            if (counted)
+                                cout << counted->num_drops();
+                            else
+                                cout << "-";
+                            cout << endl;
+                        }
+            }
+        }
     }
     /*
     list <const Route*>::iterator rt_i;

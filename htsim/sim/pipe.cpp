@@ -20,6 +20,7 @@ void
 Pipe::receivePacket(Packet& pkt)
 {
     //pkt.flow().logTraffic(pkt,*this,TrafficLogger::PKT_ARRIVE);
+    _bytes_received += pkt.size();
     //if (_inflight.empty()){
     if (_count == 0){
         /* no packets currently inflight; need to notify the eventlist

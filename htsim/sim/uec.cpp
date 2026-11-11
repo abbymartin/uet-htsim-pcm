@@ -12,6 +12,7 @@ using namespace std;
 
 // Static stuff
 flowid_t UecSrc::_debug_flowid = UINT32_MAX;
+FILE* UecSrc::_rtt_log = nullptr;
 // _path_entropy_size is the number of paths we spray across.  If you don't set it, it will default
 // to all paths.
 int UecSrc::_global_node_count = 0;
@@ -1233,6 +1234,9 @@ void UecSrc::processAck(const UecAckPacket& pkt) {
         send_time = i->second.send_time;
         pkt_size = i->second.pkt_size;
         raw_rtt = eventlist().now() - send_time;
+        if (_rtt_log)
+            fprintf(_rtt_log, "%u %llu\n", unsigned(_flow.flow_id()),
+                    (unsigned long long)raw_rtt);
 
         if (!pkt.is_rts()) {
             update_base_rtt(raw_rtt);

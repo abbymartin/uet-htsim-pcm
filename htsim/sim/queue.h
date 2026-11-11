@@ -55,6 +55,7 @@ class BaseQueue  : public EventSource, public PacketSink, public Drawable {
             return (simtime_picosec)(pkt->size() * _ps_per_byte); 
     }
 
+    linkspeed_bps bitrate() const { return _bitrate; }
     inline mem_b serviceCapacity(simtime_picosec t) { 
             return (mem_b)(timeAsSec(t) * (double)_bitrate); 
     }
