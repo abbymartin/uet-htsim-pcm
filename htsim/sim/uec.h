@@ -423,6 +423,9 @@ public:
     static simtime_picosec _adjust_period_threshold;
     //debug
     static flowid_t _debug_flowid;
+    // If set (-rtt_log), each RTT sample is written here as
+    // "<flow id> <RTT in ps>", for all flows.
+    static FILE* _rtt_log;
 private:
     bool quick_adapt(bool is_loss, bool skip, simtime_picosec delay);
     void fair_increase(uint32_t newly_acked_bytes);

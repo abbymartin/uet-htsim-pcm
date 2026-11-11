@@ -34,6 +34,8 @@ class Pipe : public EventSource, public PacketSink, public Drawable {
     PacketSink* next() const {
             return _next_sink;
     }
+    // Bytes of all packets that entered the pipe (for link utilization).
+    uint64_t bytes_received() const { return _bytes_received; }
 protected:
     string _nodename;
     //typedef pair<simtime_picosec,Packet*> pktrecord_t;
@@ -43,6 +45,7 @@ protected:
 private:
     simtime_picosec _delay;
     PacketSink* _next_sink{nullptr}; // used in generic topology for linkage
+    uint64_t _bytes_received{0};
 };
 
 
