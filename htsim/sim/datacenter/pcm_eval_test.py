@@ -53,6 +53,55 @@ class Metrics(unittest.TestCase):
         self.assertNotIn("jct_us", r)
         self.assertNotIn("goodput_gbps", r)
 
+    def test_job_metrics_p95_and_rtt(self):
+        flows = {i: (i, 99, 1000, "a") for i in range(1, 21)}
+        starts = {i: 0.0 for i in flows}
+        finishes = {i: float(i) for i in flows}  # FCTs 1..20
+        rtts = {1: [10.0, 30.0], 2: [20.0], 7: [40.0]}
+        r = pcm_eval.job_metrics(list(flows), flows, starts, finishes, rtts)
+        self.assertEqual(r["fct_p95_us"], 19.0)
+        self.assertEqual(r["rtt_samples"], 4)
+        self.assertEqual(r["rtt_mean_us"], 25.0)
+        self.assertEqual(r["rtt_p50_us"], 20.0)
+        self.assertEqual(r["rtt_p99_us"], 40.0)
+        # RTTs of flows outside the job are not used.
+        r = pcm_eval.job_metrics([2], flows, starts, finishes, rtts)
+        self.assertEqual((r["rtt_samples"], r["rtt_p99_us"]), (1, 20.0))
+        self.assertNotIn("rtt_samples", pcm_eval.job_metrics([3], flows, starts, finishes, rtts))
+
+    def test_read_rtts(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as f:
+            f.write("1 14000000\n2 1500000\n1 16000000\n")
+            f.flush()
+            self.assertEqual(pcm_eval.read_rtts(f.name), {1: [14.0, 16.0], 2: [1.5]})
+
+    def test_link_utilization(self):
+        # 100 Gbit/s for 10 us carries 125,000 bytes.
+        links = [("a", 125000, 100.0, 0), ("b", 25000, 100.0, 0), ("c", 0, 100.0, 0)]
+        top, at, mean = pcm_eval.link_utilization(links, 10.0)
+        self.assertAlmostEqual(top, 100.0)
+        self.assertEqual(at, "a")
+        self.assertAlmostEqual(mean, 40.0)
+        self.assertEqual(pcm_eval.link_utilization([], 10.0), (None, None, None))
+
+    def test_switch_drops(self):
+        self.assertEqual(pcm_eval.switch_drops([("a", 0, 100.0, 2), ("b", 0, 100.0, 3)]), 5)
+        self.assertIsNone(pcm_eval.switch_drops([("a", 0, 100.0, 2), ("b", 0, 100.0, None)]))
+        self.assertIsNone(pcm_eval.switch_drops([]))
+
+    def test_mean_sd(self):
+        self.assertEqual(pcm_eval.mean_sd([4.0]), (4.0, None))
+        mean, sd = pcm_eval.mean_sd([2.0, 4.0, 6.0])
+        self.assertEqual((mean, sd), (4.0, 2.0))
+
+    def test_table_cells(self):
+        self.assertEqual(pcm_eval.table_cells(1, "min", [10.0, 12.0], [0.5, None]),
+                         ["**10.0** ±0.5", "12.0 (+20%)"])
+        self.assertEqual(pcm_eval.table_cells(1, "max", [10.0, 12.0], [0.5, 1.0]),
+                         ["10.0 ±0.5 (-17%)", "**12.0** ±1.0"])
+        self.assertEqual(pcm_eval.table_cells(0, None, [3.0, None], [1.0, None]),
+                         ["3 ±1", "-"])
+
     def test_absolute_paths(self):
         args = pcm_eval.absolute_paths(
             ["-pcm", "a.yaml", "-pcm_ccc", "g=b.yaml", "-pcm_param", "g:P=1", "-cwnd", "10"])
@@ -120,6 +169,18 @@ class Runs(unittest.TestCase):
         self.assertGreater(int(r["q_max_bytes"]), 0)
         self.assertGreater(int(r["pcm_calls"]), 0)
         self.assertEqual(r["pcm_errors"], "0")
+        # The base RTT is 14 us; the receiver's downlink is the busiest link.
+        self.assertGreater(int(r["rtt_samples"]), 0)
+        self.assertGreaterEqual(float(r["rtt_p50_us"]), 14.0)
+        self.assertGreaterEqual(float(r["rtt_p99_us"]), float(r["rtt_p50_us"]))
+        self.assertEqual(r["util_max_at"], "LS8->DST34(0)")
+        self.assertGreater(float(r["util_max_pct"]), 80)
+        self.assertLessEqual(float(r["util_max_pct"]), 100)
+        self.assertGreater(float(r["throughput_gbps"]), float(r["goodput_gbps"]))
+        self.assertEqual(r["drops"], "0")  # trimming is on: full queues trim, not drop
+        # The run directory keeps only the output and the id map.
+        run_dir = os.path.join(out, "runs", "incast_8", "pcm_dctcp", "seed1")
+        self.assertEqual(sorted(os.listdir(run_dir)), ["idmap.txt", "stdout.txt"])
 
     def test_mixed_with_one_algorithm_per_group(self):
         out, rows = self.run_eval(
@@ -128,6 +189,10 @@ class Runs(unittest.TestCase):
         self.assertEqual([r["job"] for r in rows], ["all", "ai", "bg", "storage"])
         self.assertEqual([r["unfinished"] for r in rows], ["0"] * 4)
         self.assertEqual(rows[0]["q_max_bytes"], "")
+        # Link and RTT metrics do not need the queue logs; RTTs are per job.
+        self.assertNotEqual(rows[0]["util_max_pct"], "")
+        self.assertEqual(sum(int(r["rtt_samples"]) for r in rows[1:]),
+                         int(rows[0]["rtt_samples"]))
         with open(os.path.join(out, "runs", "mixed", "mix", "seed1", "stdout.txt")) as f:
             self.assertIn("PCM: group bg: algorithm constant", f.read())
 
